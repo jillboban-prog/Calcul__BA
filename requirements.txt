@@ -1,7 +1,6 @@
 annotations
 json
 logging
-re
 sqlite3
 contextlib
 datetime
@@ -11,7 +10,4 @@ urllib
 fastapi
 pydantic
 starlette
-.
-.db
-.security
     
