@@ -1,3 +1,9 @@
-streamlit
-pandas
-plotly
+# calculBA — version Streamlit
+streamlit>=1.60,<2
+pandas>=2.2,<4
+numpy>=1.26,<3
+openpyxl>=3.1,<4
+scipy>=1.11,<2
+# Base PostgreSQL en ligne (Neon) : utilisée si DATABASE_URL est défini dans les Secrets
+psycopg[binary]>=3.2,<4
+psycopg-pool>=3.2,<4
