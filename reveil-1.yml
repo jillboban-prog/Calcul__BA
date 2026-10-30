@@ -1,0 +1,91 @@
+# Garde calculBA éveillée : Streamlit Community Cloud endort une application
+# après 12 heures sans visite. Ce robot la visite toutes les 6 heures avec un
+# vrai navigateur et clique sur « Yes, get this app back up! » si elle dort.
+name: Garder calculBA éveillée
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"   # toutes les 6 h (heure UTC)
+  workflow_dispatch:          # bouton « Run workflow » pour lancer à la main
+
+permissions:
+  contents: read
+
+jobs:
+  reveil:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Plusieurs applications possibles, séparées par un espace
+      # (ajoutez par exemple l'adresse de BetonLab).
+      APP_URLS: "https://calculba-w7t3fmcgaokaqxftwds8ay.streamlit.app/"
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer le navigateur
+        run: |
+          pip install playwright==1.56.0
+          python -m playwright install --with-deps chromium
+      - name: Visiter les applications
+        run: |
+          cat > reveil.py <<'PYEOF'
+          """Ouvre chaque application dans un vrai navigateur ; si elle dort, clique sur le bouton de réveil."""
+          import os
+          import re
+          import sys
+
+          from playwright.sync_api import sync_playwright
+
+          URLS = os.environ["APP_URLS"].split()
+          WAKE = re.compile(r"get this app back up", re.I)
+          READY = re.compile(os.environ.get("READY_TEXT", "Jeux de données|calculBA|BetonLab"), re.I)
+
+
+          def app_ready(page) -> bool:
+              """Vrai si le contenu de l'application est affiché (page ou cadre intégré)."""
+              for frame in page.frames:
+                  try:
+                      if READY.search(frame.inner_text("body", timeout=2000)):
+                          return True
+                  except Exception:
+                      pass
+              return False
+
+
+          def visit(browser, url: str) -> bool:
+              page = browser.new_page()
+              page.goto(url, wait_until="domcontentloaded", timeout=120_000)
+              page.wait_for_timeout(8_000)
+              button = page.get_by_role("button", name=WAKE)
+              if button.count():
+                  print(f"{url} : endormie, réveil demandé.")
+                  button.first.click()
+              # On attend jusqu'à 3 minutes que l'application soit vraiment chargée :
+              # c'est cette visite complète qui remet le compteur d'inactivité à zéro.
+              for _ in range(36):
+                  if app_ready(page):
+                      page.wait_for_timeout(5_000)
+                      print(f"{url} : éveillée.")
+                      page.close()
+                      return True
+                  page.wait_for_timeout(5_000)
+              print(f"{url} : ne répond pas après 3 minutes.")
+              page.close()
+              return False
+
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              results = []
+              for url in URLS:
+                  try:
+                      results.append(visit(browser, url))
+                  except Exception as error:  # site injoignable, délai dépassé…
+                      print(f"{url} : erreur ({type(error).__name__}) {error}")
+                      results.append(False)
+              browser.close()
+
+          sys.exit(0 if all(results) else 1)
+          PYEOF
+          python reveil.py
