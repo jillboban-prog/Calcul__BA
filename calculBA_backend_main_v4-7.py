@@ -945,8 +945,89 @@ def _integrity_errors() -> tuple[type[BaseException], ...]:
 
 IntegrityError = _integrity_errors()
 
-
 # ============================================================================
+# SECTION 4 — COMPTES ET SÉCURITÉ
+# ============================================================================
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    """Accepte le nouveau format et l'ancien « sel:empreinte » de la version 3."""
+    try:
+        if stored.startswith("pbkdf2_sha256$"):
+            _, iterations, salt_hex, digest_hex = stored.split("$", 3)
+            n = int(iterations)
+        else:
+            salt_hex, digest_hex = stored.split(":", 1)
+            n = LEGACY_PBKDF2_ITERATIONS
+        candidate = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), n)
+        return hmac.compare_digest(candidate.hex(), digest_hex)
+    except (ValueError, TypeError):
+        return False
+
+
+def needs_rehash(stored: str) -> bool:
+    return not stored.startswith(f"pbkdf2_sha256${PBKDF2_ITERATIONS}$")
+
+
+# Empreinte factice : vérifier un compte inexistant prend le même temps
+# qu'un compte réel, ce qui empêche de deviner les adresses inscrites.
+DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
+
+
+class TooManyAttempts(Exception):
+    pass
+
+
+class Throttle:
+    """Compteur d'événements par clé sur une fenêtre glissante (partagé par toutes les sessions)."""
+
+    def __init__(self, maximum: int, window: int):
+        self.maximum, self.window = maximum, window
+        self._events: dict[str, deque] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def check(self, key: str, what: str) -> None:
+        with self._lock:
+            now = time.monotonic()
+            q = self._events[key]
+            while q and now - q[0] > self.window:
+                q.popleft()
+            if len(q) >= self.maximum:
+                wait = int(self.window - (now - q[0])) // 60 + 1
+                raise TooManyAttempts(f"Trop de {what}. Réessayez dans {wait} min.")
+
+    def add(self, key: str) -> None:
+        with self._lock:
+            self._events[key].append(time.monotonic())
+
+    def reset(self, key: str) -> None:
+        with self._lock:
+            self._events.pop(key, None)
+
+
+@st.cache_resource
+def throttles() -> dict[str, Throttle]:
+    return {"login": Throttle(LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS),
+            "register": Throttle(REGISTER_MAX_PER_IP, REGISTER_WINDOW_SECONDS)}
+
+
+def client_ip() -> str | None:
+    """Adresse du visiteur (en-tête du proxy de l'hébergeur, sinon connexion directe)."""
+    try:
+        fwd = st.context.headers.get("X-Forwarded-For", "")
+        if fwd:
+            return fwd.split(",")[0].strip()
+        return st.context.ip_address
+    except Exception:
+        return None
+
+
+
 # ============================================================================
 # SECTION 5 — OPÉRATIONS SUR LES DONNÉES
 # ============================================================================
