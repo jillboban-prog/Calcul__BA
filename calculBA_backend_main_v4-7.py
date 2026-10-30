@@ -1290,7 +1290,8 @@ def inject_css() -> None:
     st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@500;600&family=IBM+Plex+Mono:wght@500&display=swap');
-:root { --paper:#F6F4EF; --side:#EEEAE1; --ink:#1B1A17; --muted:#6E685D; --rule:#D9D3C7; --card:#FFFFFF; --accent:#1F5C4A; }
+:root { --paper:#F3F0E8; --side:#143A2F; --side2:#1D4B3D; --side-ink:#EEF2EC; --side-muted:#A7C4B6; --mint:#8FD6B0;
+  --ink:#16150F; --muted:#575247; --rule:#CBC3B2; --card:#FFFFFF; --accent:#13704F; }
 .stApp, .stApp p, .stApp li, .stApp label, .stApp input, .stApp textarea, .stApp button, .stApp td, .stApp th,
 .stApp span:not([data-testid="stIconMaterial"]) { font-family: 'IBM Plex Sans', system-ui, sans-serif; }
 [data-testid="stIconMaterial"] { font-family: 'Material Symbols Rounded' !important; }
@@ -1299,22 +1300,42 @@ def inject_css() -> None:
 header[data-testid="stHeader"] { background: transparent; }
 .block-container { padding-top: 2.4rem; max-width: 1160px; }
 
-[data-testid="stSidebar"] { background: var(--side); border-right: 1px solid var(--rule); }
-[data-testid="stSidebar"] .stButton button { border-radius: 0; justify-content: flex-start; box-shadow: none;
-  border: none; border-left: 3px solid transparent; background: transparent; color: var(--ink); padding: 6px 12px; min-height: 0; }
+[data-testid="stSidebar"] { background: var(--side); border-right: none; }
+[data-testid="stSidebar"] hr { border-color: rgba(255,255,255,.14) !important; }
+[data-testid="stSidebar"] .stButton button { border-radius: 4px; justify-content: flex-start; box-shadow: none;
+  border: none; border-left: 3px solid transparent; background: transparent; padding: 7px 12px; min-height: 0; }
 [data-testid="stSidebar"] .stButton button > div { justify-content: flex-start; width: 100%; }
-[data-testid="stSidebar"] .stButton button p { text-align: left; font-size: .95rem; }
-[data-testid="stSidebar"] .stButton button:hover { background: rgba(27,26,23,.05); color: var(--ink); }
-.stApp [data-testid="stSidebar"] .stButton > button[kind="primary"] { border: none; border-left: 3px solid var(--accent);
-  background: rgba(31,92,74,.09); box-shadow: none; }
-.stApp [data-testid="stSidebar"] .stButton > button[kind="primary"]:hover { background: rgba(31,92,74,.14); }
-.stApp [data-testid="stSidebar"] .stButton > button[kind="primary"] p { color: var(--accent) !important; font-weight: 600; }
+[data-testid="stSidebar"] .stButton button p { text-align: left; font-size: .95rem; color: var(--side-ink); }
+[data-testid="stSidebar"] .stButton button:hover { background: rgba(255,255,255,.08); }
+.stApp [data-testid="stSidebar"] .stButton > button[kind="primary"] { border: none; border-left: 3px solid var(--mint);
+  background: rgba(255,255,255,.13); box-shadow: none; }
+.stApp [data-testid="stSidebar"] .stButton > button[kind="primary"]:hover { background: rgba(255,255,255,.18); }
+.stApp [data-testid="stSidebar"] .stButton > button[kind="primary"] p { color: #FFFFFF !important; font-weight: 600; }
+[data-testid="stSidebar"] .cb-label { color: var(--side-muted); }
+.stApp [data-testid="stSidebar"] [data-testid="stExpander"] details { background: var(--side2); border-color: rgba(255,255,255,.16); }
+.stApp [data-testid="stSidebar"] [data-testid="stCaptionContainer"], .stApp [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p { color: var(--side-muted) !important; }
+[data-testid="stPopoverBody"] input { border: 1px solid rgba(255,255,255,.22) !important; border-radius: 4px; }
+[data-testid="stPopoverBody"] { background: var(--side2) !important; border: 1px solid rgba(255,255,255,.16); }
+[data-testid="stPopoverBody"] p, [data-testid="stPopoverBody"] label, [data-testid="stPopoverBody"] strong,
+[data-testid="stPopoverBody"] [data-testid="stWidgetLabel"] p { color: var(--side-ink) !important; }
+[data-testid="stPopoverBody"] .stButton button { background: rgba(255,255,255,.10) !important; border: 1px solid rgba(255,255,255,.18) !important; }
+[data-testid="stPopoverBody"] .stButton button p { color: #FFFFFF !important; }
+[data-testid="stPopoverBody"] .stButton button[kind="primary"]:not(:disabled) { background: #B3412E !important; border-color: #B3412E !important; }
+[data-testid="stPopoverBody"] .stButton button:disabled { opacity: .45; }
+[data-testid="stPopoverBody"] hr { border-color: rgba(255,255,255,.16) !important; }
+[data-testid="stSidebar"] [data-testid="stExpander"] summary *, [data-testid="stSidebar"] [data-testid="stCaptionContainer"],
+[data-testid="stSidebar"] [data-testid="stCheckbox"] p, [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color: var(--side-ink); }
+[data-testid="stSidebar"] [data-testid="stExpander"] .stButton button { background: rgba(255,255,255,.08); border-left: none; justify-content: center; }
+[data-testid="stSidebar"] [data-testid="stExpander"] .stButton button > div { justify-content: center; }
+[class*="st-key-recentmenu"] button { padding: 4px 6px !important; min-height: 0; border: none !important; background: transparent !important; }
+[class*="st-key-recentmenu"] button * { color: var(--side-muted) !important; }
+[class*="st-key-recentmenu"] button:hover * { color: #FFFFFF !important; }
 
 .stApp .stButton > button, .stApp .stDownloadButton > button, .stApp .stFormSubmitButton > button {
   border-radius: 4px; font-weight: 500; box-shadow: none; }
 .stApp .stButton > button[kind="primary"], .stApp .stFormSubmitButton > button[kind="primaryFormSubmit"] {
   background: var(--accent); border: 1px solid var(--accent); color: #fff; }
-.stApp .stButton > button[kind="primary"]:hover { background: #17473A; border-color: #17473A; }
+.stApp .stButton > button[kind="primary"]:hover { background: #0E5A3F; border-color: #0E5A3F; }
 .stApp .stButton > button[kind="secondary"], .stApp .stDownloadButton > button {
   background: var(--card); border: 1px solid var(--rule); color: var(--ink); }
 .stApp .stButton > button[kind="secondary"]:hover, .stApp .stDownloadButton > button:hover { border-color: var(--ink); color: var(--ink); }
@@ -1324,12 +1345,13 @@ header[data-testid="stHeader"] { background: transparent; }
 .stApp [data-testid="stAlertContainer"] { border-radius: 4px; }
 .stApp [data-testid="stCaptionContainer"] { color: var(--muted); }
 
-.cb-brand { padding: 4px 0 14px; border-bottom: 1px solid var(--rule); margin-bottom: 14px; }
-.cb-brand b { font-family: 'IBM Plex Serif', Georgia, serif; font-size: 1.55rem; font-weight: 600; color: var(--ink); letter-spacing: -.02em; }
-.cb-brand b span { color: var(--accent); }
+.cb-brand { padding: 4px 0 14px; border-bottom: 1px solid rgba(255,255,255,.14); margin-bottom: 14px; }
+.cb-brand b { font-family: 'IBM Plex Serif', Georgia, serif; font-size: 1.55rem; font-weight: 600; color: #FFFFFF; letter-spacing: -.02em; }
+.cb-brand b span { color: var(--mint); }
 .cb-brand small { display: block; font-family: 'IBM Plex Mono', monospace; font-size: .68rem; letter-spacing: .14em;
-  text-transform: uppercase; color: var(--muted); margin-top: 2px; }
+  text-transform: uppercase; color: var(--side-muted); margin-top: 2px; }
 .cb-label { font-family: 'IBM Plex Mono', monospace; font-size: .7rem; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.cb-mast h1 a, .cb-mast [data-testid="stHeaderActionElements"] { display: none !important; }
 .cb-mast { border-bottom: 1px solid var(--ink); padding-bottom: 16px; margin-bottom: 20px; }
 .cb-mast h1 { font-size: 2.3rem; line-height: 1.15; margin: 6px 0 8px !important; padding: 0 !important; max-width: 24ch; }
 .cb-mast p { color: var(--muted); max-width: 68ch; margin: 0; font-size: 1.02rem; }
@@ -1349,7 +1371,8 @@ header[data-testid="stHeader"] { background: transparent; }
 .cb-card-title { font-family: 'IBM Plex Serif', Georgia, serif; font-weight: 600; font-size: 1.12rem; color: var(--ink); margin: 4px 0 6px; line-height: 1.3; }
 .cb-desc { color: var(--muted); font-size: .9rem; margin: 0 0 10px; min-height: 2.7em; }
 [class*="st-key-cbcard"] { background: var(--card); border: 1px solid var(--rule) !important; border-radius: 6px !important; }
-[class*="st-key-cbcard"]:hover { border-color: #B9B1A2 !important; }
+[class*="st-key-cbcard"] { border-top: 3px solid var(--accent) !important; }
+[class*="st-key-cbcard"]:hover { border-color: #A99F8C !important; border-top-color: var(--accent) !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1532,16 +1555,44 @@ def sidebar(user: dict, datasets: list[dict]) -> None:
         nav_button("Mode d'emploi", "guide")
         if datasets:
             st.markdown('<div class="cb-label" style="margin:18px 0 4px">Récents</div>', unsafe_allow_html=True)
-            for d in datasets[:8]:
-                current = st.session_state.get("view") == "dataset" and st.session_state.get("ds_id") == d["id"]
-                if st.button(d["name"], key=f"recent_{d['id']}", width="stretch",
-                             type="primary" if current else "tertiary"):
-                    go("dataset", ds_id=d["id"], tab="Données", edit_row=None)
+            for d in datasets[:12]:
+                recent_row(user, d)
         st.divider()
         my_space_box(user, datasets)
         if not USE_POSTGRES and str(ROOT).startswith("/mount/src"):  # Streamlit Community Cloud sans base Neon
             st.warning("Base temporaire : sur Streamlit Cloud, les données sont effacées au redémarrage. "
                        "Ajoutez DATABASE_URL (base Neon) dans les Secrets.")
+
+
+def recent_row(user: dict, d: dict) -> None:
+    """Un jeu dans « Récents » : clic pour l'ouvrir, menu pour le renommer ou le supprimer."""
+    current = st.session_state.get("view") == "dataset" and st.session_state.get("ds_id") == d["id"]
+    name_col, menu_col = st.columns([6, 1], gap="small", vertical_alignment="center")
+    if name_col.button(d["name"], key=f"recent_{d['id']}", width="stretch", type="primary" if current else "tertiary",
+                       help=f"{d['domain']} · {plural(d['record_count'], 'observation', 'observations')}"):
+        go("dataset", ds_id=d["id"], tab="Données", edit_row=None)
+    with menu_col.popover("", icon=":material/more_horiz:", type="tertiary", key=f"recentmenu_{d['id']}",
+                          help="Renommer ou supprimer"):
+        st.markdown(f"**{html.escape(d['name'])}**")
+        new_name = st.text_input("Nouveau nom", value=d["name"], max_chars=MAX_NAME_LENGTH, key=f"rn_{d['id']}")
+        if st.button("Renommer", key=f"rnb_{d['id']}", width="stretch"):
+            try:
+                update_dataset(d["id"], user["id"], new_name, d["domain"])
+                flash("Jeu renommé.")
+                st.rerun()
+            except AppError as e:
+                st.error(str(e))
+        st.divider()
+        sure = st.checkbox("Confirmer la suppression", key=f"delc_{d['id']}")
+        if st.button("Supprimer ce jeu", key=f"delb_{d['id']}", type="primary", width="stretch", disabled=not sure):
+            try:
+                delete_dataset(d["id"], user["id"])
+                flash(f"« {d['name']} » supprimé.")
+                if current:
+                    go("home", ds_id=None)
+                st.rerun()
+            except AppError as e:
+                st.error(str(e))
 
 
 def my_space_box(user: dict, datasets: list[dict]) -> None:
@@ -1563,18 +1614,25 @@ def my_space_box(user: dict, datasets: list[dict]) -> None:
 
 # --------------------------------------------------------------- accueil
 
+HOME_LEAD = ("Saisissez ou importez les résultats de vos essais : béton, sols, topographie, matériaux, structures, "
+             "routes ou hydraulique. calculBA calcule les statistiques, trace les graphiques et ajuste les lois de "
+             "probabilité. Aucun compte n'est nécessaire et votre espace reste privé.")
+HOME_STEPS = (("01", "Créer un jeu", "Définissez vos colonnes, ou importez un fichier Excel ou CSV."),
+              ("02", "Analyser", "Statistiques, graphiques et lois de probabilité sont calculés automatiquement."),
+              ("03", "Exporter", "Récupérez vos données en Excel ou en CSV, à tout moment."))
+
+
+def home_steps() -> None:
+    st.markdown('<div class="cb-steps">' + "".join(
+        f'<div class="cb-step"><div class="n">{n}</div><b>{t}</b><span>{d}</span></div>' for n, t, d in HOME_STEPS)
+        + '</div>', unsafe_allow_html=True)
+
+
 def page_home(datasets: list[dict], user: dict) -> None:
     if not datasets:
         masthead("calculBA — espace personnel", "Vos mesures de chantier et de laboratoire, analysées sans tableur.",
-                 "Saisissez ou importez les résultats de vos essais : béton, sols, topographie, matériaux, structures, "
-                 "routes ou hydraulique. calculBA calcule les statistiques, trace les graphiques et ajuste les lois de "
-                 "probabilité. Aucun compte n'est nécessaire et votre espace reste privé.")
-        steps = (("01", "Créer un jeu", "Définissez vos colonnes, ou importez un fichier Excel ou CSV."),
-                 ("02", "Analyser", "Statistiques, graphiques et lois de probabilité sont calculés automatiquement."),
-                 ("03", "Exporter", "Récupérez vos données en Excel ou en CSV, à tout moment."))
-        st.markdown('<div class="cb-steps">' + "".join(
-            f'<div class="cb-step"><div class="n">{n}</div><b>{t}</b><span>{d}</span></div>' for n, t, d in steps)
-            + '</div>', unsafe_allow_html=True)
+                 HOME_LEAD)
+        home_steps()
         b1, b2, _ = st.columns([1.2, 1.2, 2.6])
         if b1.button("Créer un jeu de données", type="primary", width="stretch", key="home_new"):
             go("new")
@@ -1586,7 +1644,10 @@ def page_home(datasets: list[dict], user: dict) -> None:
         examples_gallery(user, "home")
         return
 
-    masthead("Espace personnel", "Mes jeux de données")
+    masthead("calculBA — espace personnel", "Mes jeux de données", HOME_LEAD)
+    with st.expander("Comment fonctionne calculBA", expanded=False):
+        home_steps()
+        st.caption("Le détail de chaque fonction est dans le « Mode d'emploi » du menu de gauche.")
     total = sum(d["record_count"] for d in datasets)
     stat_strip([("Jeux de données", str(len(datasets))), ("Observations", fmt(total)),
                 ("Domaines", str(len({d["domain"] for d in datasets}))),
