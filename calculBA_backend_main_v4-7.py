@@ -4,10 +4,8 @@ Application de collecte et d'analyse de données de génie civil : jeux de
 données, saisie et import CSV/Excel, statistiques, graphiques, lois de
 probabilité, exports.
 
-ACCÈS : sans connexion. Le lien ouvre directement l'application, et tous
-les visiteurs partagent le même espace (les mêmes jeux de données).
-Les suppressions (d'un jeu ou d'une ligne) demandent le code administrateur
-CALCULBA_ADMIN_CODE, à définir dans les Secrets.
+ACCÈS : sans compte. Chaque visiteur reçoit un espace privé, lié à son lien
+personnel (paramètre « ?espace= » de l'adresse) : il ne voit que son travail.
 
 SUR VOTRE PC
     pip install -r requirements.txt
@@ -19,7 +17,6 @@ SUR STREAMLIT COMMUNITY CLOUD (lien public gratuit)
     2. share.streamlit.io : Main file path = streamlit_app.py
     3. Paramètres de l'application, « Secrets » : collez
            DATABASE_URL = "postgresql://...neon.tech/neondb?sslmode=require"
-           CALCULBA_ADMIN_CODE = "un-code-secret"     (active les suppressions)
        Sans DATABASE_URL, les données sont EFFACÉES à chaque redémarrage de
        l'application : la base Neon (gratuite) les conserve.
 
@@ -27,23 +24,22 @@ Sommaire (cherchez « SECTION » avec Ctrl + F) :
     1. RÉGLAGES
     2. CALCULS (lecture des fichiers, statistiques, graphiques, lois, exports)
     3. BASE DE DONNÉES (SQLite sur PC, PostgreSQL en ligne)
-    4. ESPACE COMMUN ET CODE ADMINISTRATEUR
+    4. ESPACES PERSONNELS (SANS COMPTE)
     5. OPÉRATIONS SUR LES DONNÉES
     6. INTERFACE STREAMLIT
 """
 from __future__ import annotations
 
 import csv
-import hmac
+import hashlib
+import html
 import io
 import json
 import math
 import os
 import re
+import secrets
 import sqlite3
-import threading
-import time
-from collections import defaultdict, deque
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from datetime import time as dtime  # heure seule (cellules Excel) ; « time » désigne le module
@@ -72,20 +68,17 @@ def _setting(name: str, default: str = "") -> str:
 
 
 APP_NAME = "calculBA"
-VERSION = "5.0.0-streamlit"
+VERSION = "6.0.0-streamlit"
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(_setting("CALCULBA_DB", str(ROOT / "calculba.db")))
 DATABASE_URL = _setting("DATABASE_URL")
 USE_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 
-# Code qui autorise les suppressions (vide = suppressions désactivées).
-ADMIN_CODE = _setting("CALCULBA_ADMIN_CODE")
-ADMIN_MAX_FAILURES = 8
-ADMIN_WINDOW_SECONDS = 15 * 60
-# Propriétaire technique des jeux créés sans connexion (la table « datasets »
-# exige un utilisateur). Ce compte n'a pas de mot de passe utilisable.
-SHARED_EMAIL = "espace-commun@calculba.local"
-SHARED_NAME = "Espace commun"
+# Espaces personnels : un visiteur = un espace, identifié par un jeton dans l'adresse.
+SPACE_PARAM = "espace"
+SPACE_DOMAIN = "@espace.calculba.local"
+SPACE_IDLE_DAYS = int(_setting("CALCULBA_SPACE_IDLE_DAYS", "180"))   # espace inutilisé : supprimé
+PUBLIC_URL = _setting("CALCULBA_PUBLIC_URL", "https://calculba-w7t3fmcgaokaqxftwds8ay.streamlit.app/")
 
 MAX_COLUMNS = 60
 MAX_ROWS = 50_000
@@ -93,9 +86,10 @@ MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_NAME_LENGTH = 120
 MAX_COLUMN_NAME_LENGTH = 80
 MAX_VALUE_LENGTH = 500
-# Limites pour tout l'espace commun (protègent la base gratuite Neon de 0,5 Go).
-MAX_DATASETS = int(_setting("CALCULBA_MAX_DATASETS", "300"))
-MAX_RECORDS = int(_setting("CALCULBA_MAX_RECORDS", "500000"))
+MAX_DATASETS_PER_USER = int(_setting("CALCULBA_MAX_DATASETS", "60"))
+MAX_RECORDS_PER_USER = int(_setting("CALCULBA_MAX_RECORDS", "100000"))
+# Limite pour toute la base (protège la base gratuite Neon de 0,5 Go).
+MAX_RECORDS_TOTAL = int(_setting("CALCULBA_MAX_RECORDS_TOTAL", "600000"))
 NUMERIC_THRESHOLD = 0.8
 
 DOMAINS = ["Béton", "Sols et géotechnique", "Topographie", "Matériaux", "Structures", "Routes", "Hydraulique", "Autre"]
@@ -948,84 +942,103 @@ def _integrity_errors() -> tuple[type[BaseException], ...]:
 IntegrityError = _integrity_errors()
 
 # ============================================================================
-# SECTION 4 — ESPACE COMMUN ET CODE ADMINISTRATEUR
+# SECTION 4 — ESPACES PERSONNELS (SANS COMPTE)
 # ============================================================================
+#
+# Pas d'inscription : le premier passage crée un jeton aléatoire, placé dans
+# l'adresse (?espace=…). Le jeton n'est jamais stocké en clair : la base garde
+# seulement son empreinte SHA-256. L'espace n'est créé en base qu'au premier
+# jeu enregistré (une simple visite ne laisse aucune trace).
 
-class TooManyAttempts(Exception):
-    pass
-
-
-class Throttle:
-    """Compteur d'événements par clé sur une fenêtre glissante (partagé par toutes les sessions)."""
-
-    def __init__(self, maximum: int, window: int):
-        self.maximum, self.window = maximum, window
-        self._events: dict[str, deque] = defaultdict(deque)
-        self._lock = threading.Lock()
-
-    def check(self, key: str, what: str) -> None:
-        with self._lock:
-            now = time.monotonic()
-            q = self._events[key]
-            while q and now - q[0] > self.window:
-                q.popleft()
-            if len(q) >= self.maximum:
-                wait = int(self.window - (now - q[0])) // 60 + 1
-                raise TooManyAttempts(f"Trop de {what}. Réessayez dans {wait} min.")
-
-    def add(self, key: str) -> None:
-        with self._lock:
-            self._events[key].append(time.monotonic())
-
-    def reset(self, key: str) -> None:
-        with self._lock:
-            self._events.pop(key, None)
+TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,64}$")
 
 
-@st.cache_resource
-def admin_throttle() -> Throttle:
-    return Throttle(ADMIN_MAX_FAILURES, ADMIN_WINDOW_SECONDS)
+def _space_email(token: str) -> str:
+    return "espace-" + hashlib.sha256(token.encode("utf-8")).hexdigest()[:48] + SPACE_DOMAIN
 
 
-def client_ip() -> str | None:
-    """Adresse du visiteur (en-tête du proxy de l'hébergeur, sinon connexion directe)."""
-    try:
-        fwd = st.context.headers.get("X-Forwarded-For", "")
-        if fwd:
-            return fwd.split(",")[0].strip()
-        return st.context.ip_address
-    except Exception:
-        return None
+def current_token() -> str:
+    token = str(st.query_params.get(SPACE_PARAM, "") or "")
+    if not TOKEN_RE.match(token):
+        token = st.session_state.get("_space_token") or secrets.token_urlsafe(18)
+        st.query_params[SPACE_PARAM] = token
+    st.session_state["_space_token"] = token
+    return token
 
 
-def check_admin_code(code: str) -> bool:
-    """Vrai si le code administrateur est bon ; limite les essais (8 par 15 min)."""
-    if not ADMIN_CODE:
-        return False
-    key = client_ip() or "?"
-    admin_throttle().check(key, "codes incorrects")
-    if hmac.compare_digest(code.strip().encode("utf-8"), ADMIN_CODE.encode("utf-8")):
-        admin_throttle().reset(key)
-        return True
-    admin_throttle().add(key)
-    return False
-
-
-@st.cache_resource(show_spinner=False)
-def shared_space() -> dict:
-    """Identifiant de l'espace commun (créé au premier lancement)."""
+def find_space(token: str) -> int | None:
     with database() as db:
-        row = db.execute("SELECT id FROM users WHERE email = ?", (SHARED_EMAIL,)).fetchone()
-        if row is None:
-            try:
-                # « ! » n'est l'empreinte d'aucun mot de passe : personne ne peut s'y connecter.
-                db.insert("INSERT INTO users (full_name, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
-                          (SHARED_NAME, SHARED_EMAIL, "!", ts()))
-                db.commit()
-            except IntegrityError:  # créé au même instant par une autre session
-                db.rollback()
-            row = db.execute("SELECT id FROM users WHERE email = ?", (SHARED_EMAIL,)).fetchone()
-    return {"id": row["id"], "full_name": SHARED_NAME}
+        row = db.execute("SELECT id FROM users WHERE email = ?", (_space_email(token),)).fetchone()
+    return row["id"] if row else None
+
+
+def ensure_space(user: dict) -> int:
+    """Crée l'espace en base au premier enregistrement et renvoie son identifiant."""
+    if user.get("id"):
+        return user["id"]
+    email = _space_email(user["token"])
+    with database() as db:
+        try:
+            uid = db.insert("INSERT INTO users (full_name, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
+                            ("Espace personnel", email, "!", ts()))
+            db.commit()
+        except IntegrityError:  # créé au même instant dans un autre onglet
+            db.rollback()
+            uid = db.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()["id"]
+    user["id"] = uid
+    return uid
+
+
+def space_link(token: str) -> str:
+    base = PUBLIC_URL
+    try:
+        url = st.context.url
+        if url and "/~/+" not in url and "localhost" in url:
+            base = url.split("?")[0]
+    except Exception:
+        pass
+    return base.rstrip("/") + f"/?{SPACE_PARAM}={token}"
+
+
+def new_space() -> None:
+    token = secrets.token_urlsafe(18)
+    st.session_state["_space_token"] = token
+    st.query_params[SPACE_PARAM] = token
+    flash("Nouvel espace vide créé. Gardez son lien (menu « Mon espace »).", "✨")
+    go("home", ds_id=None)
+
+
+def wipe_space(user_id: int | None) -> int:
+    """Supprime tous les jeux de l'espace (l'espace lui-même reste)."""
+    if not user_id:
+        return 0
+    with database() as db:
+        ids = [r[0] for r in db.execute("SELECT id FROM datasets WHERE user_id = ?", (user_id,))]
+        db.executemany("DELETE FROM records WHERE dataset_id = ?", [(i,) for i in ids])
+        db.execute("DELETE FROM datasets WHERE user_id = ?", (user_id,))
+        db.commit()
+    return len(ids)
+
+
+@st.cache_resource(ttl=24 * 3600, show_spinner=False)
+def purge_idle_spaces() -> int:
+    """Une fois par jour : supprime les espaces personnels inutilisés depuis SPACE_IDLE_DAYS jours."""
+    cutoff = ts(now_utc() - timedelta(days=SPACE_IDLE_DAYS))
+    with database() as db:
+        rows = db.execute(
+            """SELECT u.id FROM users u
+               WHERE u.email LIKE ? AND u.created_at < ?
+                 AND NOT EXISTS (SELECT 1 FROM datasets d WHERE d.user_id = u.id
+                                 AND COALESCE(d.updated_at, d.created_at) >= ?)""",
+            ("%" + SPACE_DOMAIN, cutoff, cutoff)).fetchall()
+        ids = [r[0] for r in rows]
+        for uid in ids:
+            dids = [r[0] for r in db.execute("SELECT id FROM datasets WHERE user_id = ?", (uid,))]
+            db.executemany("DELETE FROM records WHERE dataset_id = ?", [(i,) for i in dids])
+            db.execute("DELETE FROM datasets WHERE user_id = ?", (uid,))
+            db.execute("DELETE FROM users WHERE id = ?", (uid,))
+        db.commit()
+    return len(ids)
 
 
 # ============================================================================
@@ -1049,30 +1062,35 @@ _DS_SELECT = """SELECT d.*, (SELECT COUNT(*) FROM records r WHERE r.dataset_id =
                 FROM datasets d"""
 
 
-def list_datasets(user_id: int | None = None) -> list[dict]:
-    """Tous les jeux de l'espace commun, y compris ceux créés avec les anciens comptes."""
+def list_datasets(user_id: int | None) -> list[dict]:
+    """Les jeux de cet espace uniquement."""
+    if not user_id:
+        return []
     with database() as db:
-        rows = db.execute(_DS_SELECT + " ORDER BY COALESCE(d.updated_at, d.created_at) DESC, d.id DESC").fetchall()
+        rows = db.execute(_DS_SELECT + " WHERE d.user_id = ? ORDER BY COALESCE(d.updated_at, d.created_at) DESC, d.id DESC",
+                          (user_id,)).fetchall()
     return [_dataset_out(r) for r in rows]
 
 
 def get_dataset(db: Database, did: int, user_id: int) -> dict:
-    row = db.execute(_DS_SELECT + " WHERE d.id = ?", (did,)).fetchone()
+    row = db.execute(_DS_SELECT + " WHERE d.id = ? AND d.user_id = ?", (did, user_id)).fetchone()
     if not row:
-        raise AppError("Ce jeu de données n'existe pas (il a peut-être été supprimé).")
+        raise AppError("Ce jeu de données n'existe pas dans votre espace (il a peut-être été supprimé).")
     return _dataset_out(row)
 
 
 def check_quota(db: Database, user_id: int, new_datasets: int = 0, new_records: int = 0) -> None:
     row = db.execute(
-        """SELECT (SELECT COUNT(*) FROM datasets) AS n_ds,
-                  (SELECT COUNT(*) FROM records) AS n_rec""").fetchone()
-    if new_datasets and row["n_ds"] + new_datasets > MAX_DATASETS:
-        raise AppError(f"Limite de {MAX_DATASETS} jeux atteinte pour l'espace commun. "
-                       "Demandez à l'administrateur de supprimer des jeux inutiles.")
-    if new_records and row["n_rec"] + new_records > MAX_RECORDS:
-        left = max(0, MAX_RECORDS - row["n_rec"])
-        raise AppError(f"Limite de {MAX_RECORDS:,} observations pour l'espace commun : il reste de la place pour "
+        """SELECT (SELECT COUNT(*) FROM datasets WHERE user_id = ?) AS n_ds,
+                  (SELECT COUNT(*) FROM records r JOIN datasets d ON d.id = r.dataset_id WHERE d.user_id = ?) AS n_rec,
+                  (SELECT COUNT(*) FROM records) AS n_all""", (user_id, user_id)).fetchone()
+    if new_records and row["n_all"] + new_records > MAX_RECORDS_TOTAL:
+        raise AppError("La base de calculBA est pleine pour le moment. Supprimez des jeux inutiles ou réessayez plus tard.")
+    if new_datasets and row["n_ds"] + new_datasets > MAX_DATASETS_PER_USER:
+        raise AppError(f"Limite de {MAX_DATASETS_PER_USER} jeux par espace atteinte. Supprimez des jeux inutiles.")
+    if new_records and row["n_rec"] + new_records > MAX_RECORDS_PER_USER:
+        left = max(0, MAX_RECORDS_PER_USER - row["n_rec"])
+        raise AppError(f"Limite de {MAX_RECORDS_PER_USER:,} observations par espace : il reste de la place pour "
                        f"{left:,}.".replace(",", " "))
 
 
@@ -1134,7 +1152,7 @@ def delete_dataset(did: int, user_id: int) -> None:
     with database() as db:
         get_dataset(db, did, user_id)
         db.execute("DELETE FROM records WHERE dataset_id = ?", (did,))
-        db.execute("DELETE FROM datasets WHERE id = ?", (did,))
+        db.execute("DELETE FROM datasets WHERE id = ? AND user_id = ?", (did, user_id))
         db.commit()
 
 
@@ -1253,137 +1271,352 @@ def apply_pending() -> None:
             st.session_state[key] = value
 
 
-# ------------------------------------------------------------ navigation
+# ------------------------------------------------------------ apparence
 
-def is_admin() -> bool:
-    return bool(st.session_state.get("admin"))
-
-
-def admin_box() -> None:
-    """Déverrouille les suppressions pour cette session avec le code administrateur."""
-    with st.expander("Administration", expanded=False):
-        if not ADMIN_CODE:
-            st.caption("Suppressions désactivées : ajoutez CALCULBA_ADMIN_CODE dans les Secrets "
-                       "pour pouvoir supprimer des jeux ou des lignes.")
-            return
-        if is_admin():
-            st.caption("Suppressions autorisées pendant cette visite.")
-            if st.button("Verrouiller", width="stretch", key="admin_lock"):
-                st.session_state.pop("admin", None)
-                st.rerun()
-            return
-        with st.form("admin_form", clear_on_submit=True):
-            code = st.text_input("Code administrateur", type="password", key="admin_code")
-            if st.form_submit_button("Déverrouiller", width="stretch"):
-                try:
-                    if check_admin_code(code):
-                        st.session_state["admin"] = True
-                        flash("Suppressions déverrouillées.", "🔓")
-                        st.rerun()
-                    else:
-                        st.error("Code incorrect.")
-                except TooManyAttempts as e:
-                    st.error(str(e))
+DOMAIN_STYLE = {
+    "Béton": ("🏗️", "#2563EB"), "Sols et géotechnique": ("⛰️", "#A16207"), "Topographie": ("🗺️", "#15803D"),
+    "Matériaux": ("🪨", "#D97706"), "Structures": ("🏛️", "#7C3AED"), "Routes": ("🛣️", "#475569"),
+    "Hydraulique": ("💧", "#0891B2"), "Autre": ("📁", "#64748B"),
+}
 
 
-def sidebar(user: dict, datasets: list[dict]) -> None:
-    with st.sidebar:
-        st.markdown("## calculBA")
-        if st.button("Jeux de données", width="stretch",
-                     type="primary" if st.session_state.get("view") == "home" else "secondary"):
-            go("home")
-        if st.button("Nouveau jeu", width="stretch",
-                     type="primary" if st.session_state.get("view") == "new" else "secondary"):
-            go("new")
-        if st.button("📖 Mode d'emploi", width="stretch",
-                     type="primary" if st.session_state.get("view") == "guide" else "secondary"):
-            go("guide")
-        if datasets:
-            st.caption("Récents")
-            for d in datasets[:8]:
-                current = st.session_state.get("view") == "dataset" and st.session_state.get("ds_id") == d["id"]
-                if st.button(f"{d['name']}  ·  {d['record_count']} obs.", key=f"recent_{d['id']}",
-                             width="stretch", type="primary" if current else "tertiary"):
-                    go("dataset", ds_id=d["id"], tab="Données", edit_row=None)
-        st.divider()
-        admin_box()
-        if not USE_POSTGRES and str(ROOT).startswith("/mount/src"):  # Streamlit Community Cloud sans base Neon
-            st.warning("Base temporaire : sur Streamlit Cloud, les données sont effacées au redémarrage. "
-                       "Ajoutez DATABASE_URL (base Neon) dans les Secrets.")
+def domain_icon(domain: str) -> str:
+    return DOMAIN_STYLE.get(domain, DOMAIN_STYLE["Autre"])[0]
 
 
-# --------------------------------------------------------------- accueil
+def inject_css() -> None:
+    st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+.stApp, .stApp p, .stApp li, .stApp label, .stApp input, .stApp textarea, .stApp button, .stApp h1, .stApp h2,
+.stApp h3, .stApp td, .stApp th, .stApp span:not([data-testid="stIconMaterial"]) { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; }
+[data-testid="stIconMaterial"] { font-family: 'Material Symbols Rounded' !important; }
+.stApp { background: #F4F6FA; }
+header[data-testid="stHeader"] { background: transparent; }
+.block-container { padding-top: 2rem; max-width: 1200px; }
+.stApp h1 { letter-spacing: -.02em; font-weight: 800; color: #10233F; }
+.stApp h2, .stApp h3 { letter-spacing: -.01em; color: #10233F; }
+[data-testid="stSidebar"] { background: #FFFFFF; border-right: 1px solid #E3E8EF; }
+[data-testid="stSidebar"] .stButton > button { justify-content: flex-start; border-radius: 10px; font-weight: 600; }
+[data-testid="stSidebar"] .stButton > button[kind="tertiary"] { color: #475569; padding-left: 12px; }
+[data-testid="stSidebar"] .stButton > button[kind="tertiary"]:hover { background: #F1F5F9; color: #1D4E89; }
+.stApp .stButton > button, .stApp .stDownloadButton > button, .stApp .stFormSubmitButton > button { border-radius: 10px; font-weight: 600; }
+.stApp .stButton > button[kind="primary"], .stApp .stFormSubmitButton > button[kind="primaryFormSubmit"] {
+  background: linear-gradient(135deg, #1D4E89, #2F6FB8); border: none; box-shadow: 0 6px 16px rgba(29,78,137,.25); }
+.stApp [data-testid="stExpander"] details { background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 14px; }
+.stApp [data-testid="stForm"] { background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; box-shadow: 0 1px 2px rgba(16,35,63,.05), 0 8px 24px rgba(16,35,63,.05); }
+.stApp [data-testid="stMetric"] { background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 14px; padding: 12px 16px; box-shadow: 0 1px 2px rgba(16,35,63,.05); }
+.stApp [data-testid="stDataFrame"] { border-radius: 12px; overflow: hidden; }
+.cb-brand { display:flex; gap:11px; align-items:center; margin: 2px 0 6px; }
+.cb-logo { width:40px; height:40px; border-radius:12px; display:grid; place-items:center; font-size:21px;
+  background: linear-gradient(135deg,#1D4E89,#F59E0B); box-shadow: 0 6px 16px rgba(29,78,137,.25); }
+.cb-brand b { font-size:1.25rem; color:#10233F; letter-spacing:-.02em; }
+.cb-brand small { display:block; color:#64748B; font-size:.78rem; }
+.cb-hero { border-radius:22px; padding:28px 30px; color:#fff; margin-bottom:16px;
+  background: radial-gradient(circle at 88% 15%, rgba(255,255,255,.16), transparent 42%), linear-gradient(135deg,#0F3460,#1D6FB8);
+  box-shadow: 0 10px 30px rgba(15,52,96,.25); }
+.cb-hero h1 { color:#fff !important; font-size:1.9rem; margin:6px 0 8px; line-height:1.2; padding:0 !important; }
+.cb-hero p { color: rgba(255,255,255,.9) !important; max-width: 760px; margin:0; font-size:1.02rem; }
+.cb-pill { display:inline-block; padding:4px 11px; border-radius:999px; font-size:.76rem; font-weight:700;
+  background: rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.28); color:#fff; }
+.cb-kpis { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:12px; margin:4px 0 14px; }
+.cb-kpi { background:#fff; border:1px solid #E3E8EF; border-radius:16px; padding:14px 18px; box-shadow: 0 1px 2px rgba(16,35,63,.05); }
+.cb-kpi .l { color:#64748B; font-size:.75rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }
+.cb-kpi .v { color:#10233F; font-size:1.7rem; font-weight:800; letter-spacing:-.02em; }
+.cb-card-head { display:flex; gap:12px; align-items:center; }
+.cb-ico { width:42px; height:42px; border-radius:12px; display:grid; place-items:center; font-size:21px; flex:none; }
+.cb-card-head b { color:#10233F; font-size:1rem; display:block; line-height:1.25; }
+.cb-card-head small { color:#64748B; font-size:.82rem; }
+.cb-desc { color:#475569; font-size:.88rem; margin:10px 0 4px; min-height: 2.6em; }
+.cb-section { font-weight:800; color:#10233F; font-size:1.15rem; margin:22px 0 4px; letter-spacing:-.01em; }
+.cb-sub { color:#64748B; margin:0 0 12px; }
+.cb-dshead { display:flex; gap:14px; align-items:center; margin: 0 0 12px; }
+.cb-dshead h1 { margin:0 !important; padding:0 !important; font-size:1.9rem; }
+.cb-dshead small { font-weight:700; font-size:.8rem; text-transform:uppercase; letter-spacing:.06em; }
+.cb-ico.big { width:52px; height:52px; font-size:26px; border-radius:14px; }
+[class*="st-key-cbcard"] { background:#FFFFFF; border-color:#E3E8EF !important; border-radius:16px !important;
+  box-shadow: 0 1px 2px rgba(16,35,63,.05), 0 8px 24px rgba(16,35,63,.05); transition: box-shadow .15s, transform .15s; }
+[class*="st-key-cbcard"]:hover { box-shadow: 0 2px 4px rgba(16,35,63,.06), 0 14px 30px rgba(16,35,63,.09); transform: translateY(-1px); }
+[data-testid="stSidebar"] .stButton button > div { justify-content: flex-start; width: 100%; }
+[data-testid="stSidebar"] .stButton button p { text-align: left; }
+.cb-space { background:#fff; border:1px solid #E3E8EF; border-left:4px solid #F59E0B; border-radius:14px; padding:14px 18px; margin: 4px 0 6px; }
+.cb-space b { color:#10233F; }
+.cb-space span { color:#475569; font-size:.9rem; }
+</style>
+""", unsafe_allow_html=True)
 
-def page_home(datasets: list[dict], user: dict | None = None) -> None:
-    st.title("Jeux de données")
-    st.caption("calculBA range vos mesures de laboratoire et de chantier et calcule pour vous statistiques, "
-               "graphiques et lois de probabilité. Espace commun : toutes les personnes qui ouvrent le lien "
-               "voient et complètent ces jeux.")
-    if user is not None:
-        quick_start(user, expanded=not datasets)
-    if not datasets:
-        st.info("Un jeu de données regroupe les mesures d'une campagne d'essais ou d'un chantier. "
-                "Créez votre premier jeu : définissez vos colonnes, ou importez un fichier CSV ou Excel.")
-        if st.button("Nouveau jeu", type="primary"):
-            go("new")
-        return
-    total = sum(d["record_count"] for d in datasets)
-    st.caption(f"{plural(len(datasets), 'jeu', 'jeux')}, {plural(total, 'observation', 'observations')} au total.")
-    frame = pd.DataFrame([{"Nom": d["name"], "Domaine": d["domain"], "Observations": d["record_count"],
-                           "Colonnes": len(d["columns"]), "Modifié": d["updated_at"][:10]} for d in datasets])
-    st.dataframe(frame, hide_index=True, width="stretch")
-    names = {d["id"]: f"{d['name']}  ({d['domain']}, {d['record_count']} obs.)" for d in datasets}
-    col1, col2 = st.columns([3, 1], vertical_alignment="bottom")
-    choice = col1.selectbox("Ouvrir un jeu", list(names), format_func=names.get)
-    if col2.button("Ouvrir", type="primary", width="stretch"):
-        go("dataset", ds_id=choice, tab="Données", edit_row=None)
-    st.warning("Avant toute interprétation, vérifiez les unités de chaque colonne, la qualité des mesures "
-               "et les normes d'essai applicables.", icon="⚠️")
+
+def hero(title: str, text: str, pill: str = "🏗️ calculBA") -> None:
+    st.markdown(f'<div class="cb-hero"><span class="cb-pill">{html.escape(pill)}</span>'
+                f'<h1>{html.escape(title)}</h1><p>{html.escape(text)}</p></div>', unsafe_allow_html=True)
 
 
+def kpi_row(items: list[tuple[str, str]]) -> None:
+    cards = "".join(f'<div class="cb-kpi"><div class="l">{html.escape(a)}</div><div class="v">{html.escape(b)}</div></div>'
+                    for a, b in items)
+    st.markdown(f'<div class="cb-kpis">{cards}</div>', unsafe_allow_html=True)
 
-# ------------------------------------------------------------ mode d'emploi
 
-EXAMPLE_NAME = "Exemple — essais de béton"
+def card_head(domain: str, title: str, subtitle: str) -> None:
+    icon, color = DOMAIN_STYLE.get(domain, DOMAIN_STYLE["Autre"])
+    st.markdown(f'<div class="cb-card-head"><div class="cb-ico" style="background:{color}1F;color:{color}">{icon}</div>'
+                f'<div><b>{html.escape(title)}</b><small>{html.escape(subtitle)}</small></div></div>',
+                unsafe_allow_html=True)
 
 
-def create_example(user: dict) -> None:
-    """Crée le jeu d'exemple (54 essais de béton) et l'ouvre sur les statistiques."""
+# ------------------------------------------------------------ exemples par domaine
+
+def _csv(header: list[str], rows: list[list]) -> str:
+    def cell(v):
+        if isinstance(v, float):
+            return f"{v}".replace(".", ",")
+        return "" if v is None else str(v)
+    return "\n".join([";".join(header)] + [";".join(cell(v) for v in r) for r in rows]) + "\n"
+
+
+def _example_sols() -> str:
+    rng = np.random.default_rng(11)
+    rows = []
+    for s in range(1, 5):
+        for k in range(1, 13):
+            z = k * 0.5
+            nature = "Argile latéritique" if z <= 2.5 else ("Argile sableuse" if z <= 4.5 else "Sable argileux")
+            w = round(float(rng.normal(19 + 1.6 * z, 1.5)), 1)
+            gd = round(float(rng.normal(1.82 - 0.035 * z, 0.03)), 2)
+            ll = round(float(rng.normal(52 - 2.5 * z, 3)), 0)
+            ip = round(float(rng.normal(24 - 1.4 * z, 2)), 0)
+            cbr = round(float(rng.normal(28 - 6 * z, 3)), 0) if z <= 2.0 else None
+            rows.append([f"SP{s}", float(z), nature, w, gd, ll, ip, cbr])
+    return _csv(["Sondage", "Profondeur_m", "Nature", "Teneur_eau_pct", "Densite_seche_t_m3",
+                 "Limite_liquidite_pct", "Indice_plasticite_pct", "CBR_pct"], rows)
+
+
+def _example_topo() -> str:
+    rng = np.random.default_rng(7)
+    rows = []
+    n = 0
+    for i in range(6):
+        for j in range(7):
+            n += 1
+            e, nn = 774100 + 25 * i + float(rng.normal(0, 2)), 428200 + 25 * j + float(rng.normal(0, 2))
+            alt_m = 742.0 + 0.045 * (e - 774100) - 0.03 * (nn - 428200) + float(rng.normal(0, .25))
+            code = "Repère" if n in (1, 21, 42) else ("Axe route" if j == 3 else "Terrain naturel")
+            rows.append([f"P{n:02d}", round(e, 3), round(nn, 3), round(alt_m, 3), code])
+    return _csv(["Point", "Est_m", "Nord_m", "Altitude_m", "Code"], rows)
+
+
+def _example_granulo() -> str:
+    sieves = [0.08, 0.16, 0.315, 0.63, 1.25, 2.5, 4.0, 5.0, 6.3, 8.0, 10.0, 12.5, 16.0, 20.0, 25.0]
+    mats = {"Sable 0/4": (0.9, 1.6), "Gravillon 4/10": (6.5, 4.0), "Gravier 10/20": (14.0, 5.5)}
+    rows = []
+    for name, (d50, slope) in mats.items():
+        for d in sieves:
+            passing = 100 / (1 + (d50 / d) ** slope)
+            passing = 100.0 if passing > 99.5 else round(passing, 1)
+            rows.append([name, d, passing, round(100 - passing, 1)])
+    return _csv(["Echantillon", "Tamis_mm", "Passant_pct", "Refus_cumule_pct"], rows)
+
+
+def _example_structures() -> str:
+    rng = np.random.default_rng(5)
+    rows = []
+    e_mod, inertia = 30e9, 0.25 * 0.5 ** 3 / 12  # béton 30 GPa, poutre 25 × 50 cm
+    for k in range(1, 31):
+        level = ["RDC", "R+1", "R+2"][(k - 1) // 10]
+        span = round(float(rng.uniform(3.5, 7.5)), 2)
+        q = round(float(rng.uniform(15, 45)), 1)
+        f_inst = 5 * q * 1e3 * span ** 4 / (384 * e_mod * inertia) * 1000  # mm
+        f = round(f_inst * float(rng.uniform(1.6, 2.8)), 1)  # flèche à long terme (fluage, fissuration)
+        f_adm = round(span * 1000 / 250, 1)
+        rows.append([f"P{k}", level, span, q, f, f_adm, "Oui" if f <= f_adm else "Non"])
+    return _csv(["Element", "Niveau", "Portee_m", "Charge_kN_m", "Fleche_mm", "Fleche_admissible_mm", "Conforme"], rows)
+
+
+def _example_routes() -> str:
+    rng = np.random.default_rng(3)
+    rows = []
+    for k in range(25):
+        pr = round(k * 0.2, 1)
+        section = "A" if pr < 2.5 else "B"
+        ep = round(float(rng.normal(20 if section == "A" else 17, 1.2)), 1)
+        defl = round(float(rng.normal(55 if section == "A" else 78, 9)), 0)
+        comp = round(float(rng.normal(98.5, 1.2)), 1)
+        w = round(float(rng.normal(7.5, .8)), 1)
+        rows.append([pr, section, ep, defl, comp, w])
+    return _csv(["PR_km", "Section", "Epaisseur_base_cm", "Deflexion_1_100mm", "Compacite_pct", "Teneur_eau_pct"], rows)
+
+
+def _example_hydro() -> str:
+    rng = np.random.default_rng(9)
+    # Régime équatorial : deux saisons des pluies (mai et octobre), étiage en février.
+    shape = [0.35, 0.25, 0.45, 0.8, 1.0, 0.85, 0.6, 0.65, 1.1, 1.6, 1.3, 0.6]
+    rows = []
+    for station, base, a, b in (("Station A", 180.0, 0.32, 0.45), ("Station B", 95.0, 0.41, 0.42)):
+        for year in (2024, 2025):
+            for m in range(12):
+                q = round(base * shape[m] * float(rng.normal(1, .1)), 1)
+                h = round(a * q ** b, 2)
+                rows.append([station, f"{year}-{m + 1:02d}", q, h])
+    return _csv(["Station", "Mois", "Debit_m3_s", "Hauteur_m"], rows)
+
+
+EXAMPLE_SETS = {
+    "Béton": ("Essais de compression", "54 éprouvettes de 3 lots à 7, 14 et 28 jours : résistance et affaissement.",
+              lambda: EXAMPLE_CSV),
+    "Sols et géotechnique": ("Sondages de sol", "4 sondages tous les 0,5 m : teneur en eau, densité sèche, limites d'Atterberg, CBR.",
+                             _example_sols),
+    "Topographie": ("Levé topographique", "42 points en coordonnées (Est, Nord, Altitude) avec codes de levé.",
+                    _example_topo),
+    "Matériaux": ("Analyse granulométrique", "Courbes de 3 granulats (sable 0/4, gravillon 4/10, gravier 10/20).",
+                  _example_granulo),
+    "Structures": ("Flèches de poutres", "30 poutres : portée, charge, flèche mesurée et admissible (L/250).",
+                   _example_structures),
+    "Routes": ("Contrôle de chaussée", "25 points tous les 200 m : épaisseur, déflexion, compacité, teneur en eau.",
+               _example_routes),
+    "Hydraulique": ("Débits mensuels", "2 stations sur 2 ans : débit et hauteur d'eau, avec les saisons des pluies.",
+                    _example_hydro),
+}
+
+
+def create_example(user: dict, domain: str) -> None:
+    title, _, make = EXAMPLE_SETS[domain]
     try:
-        did, n = import_dataset(user["id"], "essais_beton.csv", EXAMPLE_CSV.encode("utf-8-sig"), EXAMPLE_NAME, "Béton")
-        flash(f"Jeu d'exemple créé : {plural(n, 'essai', 'essais')}.")
+        uid = ensure_space(user)
+        did, n = import_dataset(uid, f"{title}.csv", make().encode("utf-8-sig"), f"Exemple — {title}", domain)
+        flash(f"Exemple « {title} » créé : {plural(n, 'ligne', 'lignes')}.")
         go("dataset", ds_id=did, tab="Statistiques", edit_row=None)
     except AppError as e:
         st.error(str(e))
 
 
-def quick_start(user: dict, expanded: bool) -> None:
-    """Résumé en 4 étapes affiché sur l'accueil."""
-    with st.expander("Comment ça marche ? (4 étapes)", expanded=expanded, icon="💡"):
-        st.markdown(
-            "1. **Créez un jeu de données** avec « Nouveau jeu » : une campagne d'essais, un chantier, un lot.\n"
-            "2. **Mettez vos mesures** : saisissez-les ligne par ligne, ou importez votre fichier Excel ou CSV.\n"
-            "3. **Lisez les résultats** dans les onglets *Statistiques*, *Graphiques* et *Probabilités* : "
-            "tout est calculé automatiquement.\n"
-            "4. **Exportez** vos données en Excel ou en CSV quand vous voulez.")
-        c1, c2 = st.columns(2)
-        if c1.button("Essayer avec un exemple", type="primary", width="stretch", key="qs_example",
-                     help="Crée un jeu de 54 essais de béton pour découvrir l'application sans rien saisir."):
-            create_example(user)
-        if c2.button("Lire le mode d'emploi complet", width="stretch", key="qs_guide"):
-            go("guide")
+def examples_gallery(user: dict, key: str) -> None:
+    domains = list(EXAMPLE_SETS)
+    for start in range(0, len(domains), 3):
+        cols = st.columns(3)
+        for col, domain in zip(cols, domains[start:start + 3]):
+            title, desc, make = EXAMPLE_SETS[domain]
+            with col.container(border=True, key=f"cbcard_{key}_{domain.split()[0]}"):
+                card_head(domain, title, domain)
+                st.markdown(f'<div class="cb-desc">{html.escape(desc)}</div>', unsafe_allow_html=True)
+                b1, b2 = st.columns(2)
+                if b1.button("Essayer", key=f"{key}_try_{domain}", type="primary", width="stretch"):
+                    create_example(user, domain)
+                b2.download_button("CSV", make().encode("utf-8-sig"), file_name=f"exemple_{domain.split()[0].lower()}.csv",
+                                   mime="text/csv", key=f"{key}_dl_{domain}", width="stretch")
+    st.caption("Données fictives, réalistes, faites pour apprendre à utiliser calculBA.")
 
+
+# ------------------------------------------------------------ navigation
+
+def nav_button(label: str, view: str, **state) -> None:
+    active = st.session_state.get("view", "home") == view
+    if st.button(label, width="stretch", type="primary" if active else "tertiary", key=f"nav_{view}"):
+        go(view, **state)
+
+
+def sidebar(user: dict, datasets: list[dict]) -> None:
+    with st.sidebar:
+        st.markdown('<div class="cb-brand"><div class="cb-logo">🏗️</div><div><b>calculBA</b>'
+                    '<small>Données de génie civil</small></div></div>', unsafe_allow_html=True)
+        st.write("")
+        nav_button("🏠  Mes jeux de données", "home")
+        nav_button("➕  Nouveau jeu", "new")
+        nav_button("🧪  Exemples par domaine", "examples")
+        nav_button("📖  Mode d'emploi", "guide")
+        if datasets:
+            st.caption("Récents")
+            for d in datasets[:8]:
+                current = st.session_state.get("view") == "dataset" and st.session_state.get("ds_id") == d["id"]
+                if st.button(f"{domain_icon(d['domain'])}  {d['name']}  ·  {d['record_count']}", key=f"recent_{d['id']}",
+                             width="stretch", type="primary" if current else "tertiary"):
+                    go("dataset", ds_id=d["id"], tab="Données", edit_row=None)
+        st.divider()
+        my_space_box(user, datasets)
+        if not USE_POSTGRES and str(ROOT).startswith("/mount/src"):  # Streamlit Community Cloud sans base Neon
+            st.warning("Base temporaire : sur Streamlit Cloud, les données sont effacées au redémarrage. "
+                       "Ajoutez DATABASE_URL (base Neon) dans les Secrets.")
+
+
+def my_space_box(user: dict, datasets: list[dict]) -> None:
+    with st.expander("🔒  Mon espace", expanded=False):
+        st.caption("Votre travail est privé : il est lié à votre lien personnel. "
+                   "Gardez ce lien (favori, note) pour le retrouver sur n'importe quel appareil.")
+        st.code(space_link(user["token"]), language=None, wrap_lines=True)
+        st.divider()
+        if datasets:
+            sure = st.checkbox(f"Effacer définitivement mes {plural(len(datasets), 'jeu', 'jeux')}", key="wipe_sure")
+            if st.button("🗑️  Tout effacer", disabled=not sure, width="stretch", key="wipe_btn"):
+                n = wipe_space(user["id"])
+                st.session_state.pop("wipe_sure", None)
+                flash(f"Espace vidé : {plural(n, 'jeu supprimé', 'jeux supprimés')}.")
+                go("home", ds_id=None)
+        if st.button("✨  Commencer un nouvel espace vide", width="stretch", key="new_space_btn",
+                     help="Ouvre un espace neuf. L'ancien reste accessible avec son lien."):
+            new_space()
+
+
+# --------------------------------------------------------------- accueil
+
+def page_home(datasets: list[dict], user: dict) -> None:
+    if not datasets:
+        hero("Vos mesures de chantier et de laboratoire, analysées en quelques clics",
+             "Saisissez ou importez vos mesures (béton, sols, topographie, routes, hydraulique…) : calculBA calcule "
+             "pour vous statistiques, graphiques et lois de probabilité. Pas de compte : votre espace est privé.")
+        st.markdown('<div class="cb-section">Pour commencer</div>', unsafe_allow_html=True)
+        c1, c2, c3 = st.columns(3)
+        for col, (icon, title, text_) in zip((c1, c2, c3), (
+                ("➕", "Créez un jeu", "Définissez vos colonnes, ou importez votre fichier Excel ou CSV."),
+                ("📊", "Analysez", "Statistiques, graphiques et lois de probabilité se calculent tout seuls."),
+                ("⬇️", "Exportez", "Récupérez vos données en Excel ou en CSV à tout moment."))):
+            with col.container(border=True, key=f"cbcard_start_{icon}"):
+                st.markdown(f"**{icon}  {title}**")
+                st.caption(text_)
+        b1, _ = st.columns([1, 3])
+        if b1.button("➕  Nouveau jeu de données", type="primary", width="stretch", key="home_new"):
+            go("new")
+        st.markdown('<div class="cb-section">Ou essayez un exemple, dans votre domaine</div>'
+                    '<p class="cb-sub">Un clic crée une copie dans votre espace : vous pouvez la modifier et la supprimer.</p>',
+                    unsafe_allow_html=True)
+        examples_gallery(user, "home")
+        return
+
+    st.markdown('<div class="cb-dshead"><div class="cb-ico big" style="background:#1D4E891F">🏠</div>'
+                '<div><small style="color:#1D4E89">Mon espace privé</small><h1>Mes jeux de données</h1></div></div>',
+                unsafe_allow_html=True)
+    total = sum(d["record_count"] for d in datasets)
+    kpi_row([("Jeux de données", str(len(datasets))), ("Observations", fmt(total)),
+             ("Domaines", str(len({d["domain"] for d in datasets}))),
+             ("Dernière modification", datasets[0]["updated_at"][:10])])
+    domains = ["Tous"] + sorted({d["domain"] for d in datasets})
+    chosen = st.segmented_control("Domaine", domains, default="Tous", key="home_domain", label_visibility="collapsed") or "Tous"
+    shown = [d for d in datasets if chosen == "Tous" or d["domain"] == chosen]
+    for start in range(0, len(shown), 3):
+        cols = st.columns(3)
+        for col, d in zip(cols, shown[start:start + 3]):
+            with col.container(border=True, key=f"cbcard_ds_{d['id']}"):
+                card_head(d["domain"], d["name"], d["domain"])
+                st.markdown(f'<div class="cb-desc">{plural(d["record_count"], "observation", "observations")} · '
+                            f'{len(d["columns"])} colonnes · modifié le {d["updated_at"][:10]}</div>', unsafe_allow_html=True)
+                if st.button("Ouvrir", key=f"open_{d['id']}", width="stretch"):
+                    go("dataset", ds_id=d["id"], tab="Données", edit_row=None)
+    st.warning("Avant toute interprétation, vérifiez les unités de chaque colonne, la qualité des mesures "
+               "et les normes d'essai applicables.", icon="⚠️")
+
+
+def page_examples(user: dict) -> None:
+    hero("Exemples par domaine", "Sept jeux de données réalistes pour découvrir calculBA dans votre spécialité. "
+         "« Essayer » crée une copie dans votre espace ; « CSV » télécharge le fichier pour voir le bon format d'import.",
+         "🧪 Exemples")
+    examples_gallery(user, "ex")
+
+
+# ------------------------------------------------------------ mode d'emploi
 
 def page_guide(user: dict) -> None:
-    st.title("Mode d'emploi")
-    st.write("calculBA sert à **ranger et analyser des mesures de génie civil** (essais de béton, de sols, "
-             "relevés topographiques, chantiers…) sans faire les calculs à la main dans un cahier ou un tableur. "
-             "Vous entrez les mesures, l'application calcule moyennes, dispersion, graphiques et lois de probabilité.")
-    if st.button("Essayer tout de suite avec un exemple (54 essais de béton)", type="primary", key="g_example"):
-        create_example(user)
-
+    hero("Mode d'emploi", "calculBA range et analyse vos mesures de génie civil (essais de béton, sols, topographie, "
+         "routes, hydraulique…) sans faire les calculs à la main dans un cahier ou un tableur.", "📖 Guide")
     t1, t2, t3, t4, t5 = st.tabs(["1. Les bases", "2. Mettre des mesures", "3. Lire les résultats",
-                                  "4. Exporter et partager", "Questions fréquentes"])
+                                  "4. Mon espace et l'export", "Questions fréquentes"])
     with t1:
         st.subheader("Trois mots à connaître")
         st.markdown(
@@ -1393,16 +1626,12 @@ def page_guide(user: dict) -> None:
             "- **Observation** : une ligne, c'est-à-dire une éprouvette, un point ou un sondage, avec toutes ses mesures.")
         st.subheader("Le menu de gauche")
         st.markdown(
-            "- **Jeux de données** : la liste de tous les jeux ; choisissez-en un et cliquez sur « Ouvrir ».\n"
+            "- **Mes jeux de données** : tous vos jeux, filtrables par domaine.\n"
             "- **Nouveau jeu** : créer un jeu vide ou importer un fichier.\n"
-            "- **Mode d'emploi** : cette page.\n"
-            "- **Récents** : les derniers jeux utilisés, en un clic.\n"
-            "- **Administration** : réservé à la personne qui gère l'application (suppressions).")
-        st.subheader("Un espace commun")
-        st.info("Il n'y a pas de compte à créer : tous ceux qui ouvrent le lien voient et complètent les mêmes jeux. "
-                "N'y mettez rien de confidentiel. Pour éviter les accidents, seule la personne qui a le code "
-                "administrateur peut supprimer un jeu ou une ligne.")
-
+            "- **Exemples par domaine** : un jeu d'exemple pour chaque spécialité (béton, sols, topographie, matériaux, "
+            "structures, routes, hydraulique).\n"
+            "- **Récents** : vos derniers jeux, en un clic.\n"
+            "- **Mon espace** : votre lien personnel, et les boutons pour tout effacer ou repartir de zéro.")
     with t2:
         st.subheader("Méthode A : créer un jeu et saisir les mesures")
         st.markdown(
@@ -1413,21 +1642,16 @@ def page_guide(user: dict) -> None:
         st.subheader("Méthode B : importer un fichier Excel ou CSV")
         st.markdown(
             "1. Cliquez sur **Nouveau jeu**, puis « Importer un fichier ».\n"
-            "2. Votre fichier doit avoir **les noms de colonnes sur la première ligne**, puis une observation par ligne.\n"
+            "2. **Les noms de colonnes sur la première ligne**, puis une observation par ligne.\n"
             "3. Choisissez le fichier (.xlsx ou .csv), puis **Importer le fichier**.\n"
-            "4. Pour voir le bon format, téléchargez le **fichier d'exemple** proposé sur cette page.")
-        st.subheader("Corriger une erreur")
-        st.markdown("Dans l'onglet **Données**, partie « Modifier une ligne » : choisissez le **numéro de la ligne** "
-                    "(colonne N° du tableau), corrigez la valeur, puis « Enregistrer la ligne ».")
+            "4. Pour voir le bon format, téléchargez le **CSV d'un exemple** dans « Exemples par domaine ».")
         st.subheader("Les bonnes habitudes")
         st.markdown(
-            "- **Mettez l'unité dans le nom de la colonne** : `Resistance_MPa`, `Profondeur_m`. Sinon, plus personne ne sait "
-            "si 25 veut dire 25 MPa ou 25 kN.\n"
+            "- **Mettez l'unité dans le nom de la colonne** : `Resistance_MPa`, `Profondeur_m`.\n"
             "- **Virgule ou point** pour les décimales : 30,5 et 30.5 sont acceptés.\n"
             "- **Une mesure inconnue = case vide**, jamais 0 : un 0 ferait baisser la moyenne.\n"
-            "- **Une ligne = une éprouvette** (ou un point, un sondage) ; ne mélangez pas deux essais sur une ligne.\n"
+            "- **Une ligne = une éprouvette** (ou un point, un sondage).\n"
             "- Une colonne de **texte** (Lot, Couche, Sondage) sert à **regrouper** les résultats dans les graphiques.")
-
     with t3:
         st.subheader("Onglet Statistiques")
         st.markdown(
@@ -1439,54 +1663,44 @@ def page_guide(user: dict) -> None:
             "| **CV** | écart-type ÷ moyenne, en % : plus il est petit, plus les mesures sont régulières |\n"
             "| **Min, Max** | plus petite et plus grande valeur : vérifiez qu'il n'y a pas d'erreur de saisie |\n"
             "| **Q1, Médiane, Q3** | 25 %, 50 % et 75 % des valeurs sont en dessous |")
-        st.caption("Exemple : moyenne 31 MPa, écart-type 2 MPa, CV 6 % : des résistances proches les unes des autres. "
-                   "Un message signale aussi les valeurs non numériques (une lettre dans une colonne de nombres) "
-                   "avec un bouton pour aller les corriger.")
         st.subheader("Onglet Graphiques")
         st.markdown(
-            "- **Répartition** (histogramme) : combien de mesures tombent dans chaque intervalle.\n"
-            "- **Moyenne par groupe** : compare des lots, des âges ou des couches.\n"
-            "- **Relation entre deux variables** : chaque point est une observation ; la droite et le **R²** "
-            "disent si les deux grandeurs évoluent ensemble (R² proche de 1 : relation forte).\n"
-            "- **Valeurs dans l'ordre de saisie** : repère une dérive ou une valeur anormale.\n\n"
-            "Passez la souris (ou le doigt) sur un graphique pour lire les valeurs.")
+            "- **Répartition** : combien de mesures dans chaque intervalle.\n"
+            "- **Moyenne par groupe** : compare des lots, des couches, des stations.\n"
+            "- **Relation entre deux variables** : la droite et le **R²** disent si deux grandeurs évoluent ensemble.\n"
+            "- **Valeurs dans l'ordre de saisie** : repère une dérive ou une valeur anormale.")
         st.subheader("Onglet Probabilités")
         st.markdown(
-            "L'application cherche la **loi de probabilité** qui décrit le mieux vos mesures "
-            "(Normale, Lognormale, Weibull, Gumbel…) :\n"
-            "- la **courbe noire** est la loi ajustée, les **barres** sont vos mesures ;\n"
-            "- le **fractile 5 %** est la valeur sous laquelle tombent 5 % des mesures selon la loi ;\n"
-            "- le tableau « Quelle loi décrit le mieux… » classe les lois : **la plus petite AIC est la meilleure**.\n\n"
-            "Il faut au moins 5 valeurs, et une trentaine pour un résultat fiable.")
+            "calculBA cherche la **loi de probabilité** qui décrit le mieux vos mesures (Normale, Lognormale, Weibull, "
+            "Gumbel…). **La plus petite AIC est la meilleure.** Le **fractile 5 %** est la valeur sous laquelle tombent "
+            "5 % des mesures selon la loi. Comptez une trentaine de valeurs pour un résultat fiable.")
         st.warning("Ces calculs aident à interpréter les mesures ; ils ne remplacent pas la vérification "
-                   "de conformité prévue par les normes (EN 206, Eurocodes…).", icon="⚠️")
-
+                   "prévue par les normes (EN 206, Eurocodes…).", icon="⚠️")
     with t4:
-        st.subheader("Exporter")
+        st.subheader("Un espace privé, sans compte")
         st.markdown(
-            "Ouvrez le jeu, puis « Exporter, renommer ou supprimer ce jeu » :\n"
-            "- **Excel (.xlsx)** : à ouvrir directement dans Excel ;\n"
-            "- **CSV Excel FR/DE** : séparateur point-virgule et virgule décimale (Excel en français) ;\n"
-            "- **CSV standard** : pour d'autres logiciels (Python, R…).")
-        st.subheader("Partager")
-        st.markdown("Envoyez simplement le lien de l'application : la personne arrive directement sur les jeux de données, "
-                    "sans inscription.")
-
+            "Chaque personne qui ouvre calculBA reçoit **son propre espace vide** : elle ne voit que son travail. "
+            "L'espace est lié à **votre lien personnel** (menu « Mon espace ») : gardez-le en favori pour retrouver "
+            "vos jeux, sur votre téléphone comme sur votre ordinateur. Ne le partagez qu'avec les personnes qui doivent "
+            "voir vos données.")
+        st.markdown(
+            "- **Tout effacer** : supprime tous vos jeux (Mon espace).\n"
+            "- **Commencer un nouvel espace vide** : repart de zéro ; l'ancien reste accessible avec l'ancien lien.\n"
+            "- Un espace inutilisé pendant 6 mois est supprimé automatiquement.")
+        st.subheader("Exporter")
+        st.markdown("Ouvrez le jeu, puis « Exporter, renommer ou supprimer ce jeu » : **Excel (.xlsx)**, "
+                    "**CSV Excel FR/DE** (point-virgule, virgule décimale) ou **CSV standard**.")
     with t5:
         st.markdown(
+            "**Je ne retrouve plus mes jeux de données.**  \n"
+            "Vous avez sans doute ouvert le lien général de calculBA, qui crée un nouvel espace. "
+            "Ouvrez votre **lien personnel** (celui qui contient « ?espace= »).\n\n"
             "**L'application affiche « This app has gone to sleep » ?**  \n"
-            "Elle s'est endormie faute de visites. Cliquez sur « Yes, get this app back up! » et patientez environ une minute : "
-            "les données ne sont pas perdues.\n\n"
-            "**Mes données sont-elles conservées ?**  \n"
-            "Oui : elles sont enregistrées dans une base de données en ligne, même quand l'application dort.\n\n"
-            "**Je ne trouve pas le bouton « Supprimer ».**  \n"
-            "La suppression demande le code administrateur (menu de gauche, « Administration »). "
-            "Demandez-le à la personne qui gère l'application.\n\n"
+            "Cliquez sur « Yes, get this app back up! » et patientez une minute : les données ne sont pas perdues.\n\n"
             "**« Valeur non numérique » quand j'ajoute une ligne ?**  \n"
-            "Une lettre ou un symbole a été tapé dans une colonne de nombres (ex. « 30 MPa » au lieu de « 30,5 »). "
-            "Écrivez seulement le nombre ; l'unité est dans le nom de la colonne.\n\n"
+            "Écrivez seulement le nombre (30,5) ; l'unité est dans le nom de la colonne.\n\n"
             "**Mon fichier ne s'importe pas.**  \n"
-            "Vérifiez que la première ligne contient les noms de colonnes, qu'il n'y a pas de lignes de titre au-dessus, "
+            "Vérifiez que la première ligne contient les noms de colonnes, sans lignes de titre au-dessus, "
             "et que le fichier est en .xlsx ou .csv.")
 
 
@@ -1496,15 +1710,14 @@ def page_new(user: dict) -> None:
     st.title("Nouveau jeu de données")
     st.caption("Deux façons de commencer : **définir les colonnes** puis saisir les mesures une par une, "
                "ou **importer un fichier** Excel ou CSV qui contient déjà vos mesures. "
-               "Un doute ? Ouvrez le « Mode d'emploi » dans le menu de gauche.")
+               "Pour voir le bon format, regardez les « Exemples par domaine ».")
     mode = st.segmented_control("Méthode", ["Définir les colonnes", "Importer un fichier"],
                                 default="Définir les colonnes", key="new_mode")
     if mode == "Importer un fichier":
         st.write("La première ligne contient les noms de colonnes, chaque ligne suivante une observation. "
                  "Séparateur virgule, point-virgule ou tabulation (détecté automatiquement) ; décimales avec "
                  f"virgule ou point ; {fmt(MAX_ROWS)} lignes et {MAX_COLUMNS} colonnes maximum.")
-        st.download_button("Télécharger le fichier d'exemple (essais de béton)", EXAMPLE_CSV.encode("utf-8-sig"),
-                           file_name="essais_beton.csv", mime="text/csv")
+        st.caption("Un fichier d'exemple pour chaque domaine est disponible dans « Exemples par domaine ».")
         with st.form("import"):
             file = st.file_uploader("Fichier CSV ou Excel (.xlsx)", type=["csv", "txt", "xlsx", "xlsm"])
             name = st.text_input("Nom du jeu (facultatif)", placeholder="Nom du fichier par défaut", max_chars=MAX_NAME_LENGTH)
@@ -1515,7 +1728,7 @@ def page_new(user: dict) -> None:
                 else:
                     try:
                         with st.spinner("Import en cours…"):
-                            did, n = import_dataset(user["id"], file.name, file.getvalue(), name, domain)
+                            did, n = import_dataset(ensure_space(user), file.name, file.getvalue(), name, domain)
                         flash(f"{plural(n, 'ligne importée', 'lignes importées')}.")
                         go("dataset", ds_id=did, tab="Statistiques", edit_row=None)
                     except AppError as e:
@@ -1532,7 +1745,7 @@ def page_new(user: dict) -> None:
                                     "(Resistance_MPa). Le type numérique est détecté automatiquement.")
         if st.form_submit_button("Créer le jeu", type="primary"):
             try:
-                did = create_dataset(user["id"], name, domain, columns)
+                did = create_dataset(ensure_space(user), name, domain, columns)
                 flash(f"Jeu « {name.strip()} » créé.")
                 go("dataset", ds_id=did, tab="Données", edit_row=None)
             except AppError as e:
@@ -1550,19 +1763,20 @@ def page_dataset(user: dict, did: int) -> None:
             ds = get_dataset(db, did, user["id"])
         except AppError as e:
             st.error(str(e))
-            if st.button("Revenir aux jeux de données"):
+            if st.button("Revenir à mes jeux de données"):
                 go("home")
             return
         records = load_records(db, did)
     rows = [v for _, v in records]
     stats = describe(ds["columns"], rows)
 
-    st.title(ds["name"])
-    m = st.columns(4)
-    m[0].metric("Domaine", ds["domain"])
-    m[1].metric("Observations", fmt(ds["record_count"]))
-    m[2].metric("Colonnes (numériques)", f"{len(ds['columns'])} ({len(stats['numeric_columns'])})")
-    m[3].metric("Modifié", ds["updated_at"][:10])
+    icon, color = DOMAIN_STYLE.get(ds["domain"], DOMAIN_STYLE["Autre"])
+    st.markdown(f'<div class="cb-dshead"><div class="cb-ico big" style="background:{color}1F;color:{color}">{icon}</div>'
+                f'<div><small style="color:{color}">{html.escape(ds["domain"])}</small>'
+                f'<h1>{html.escape(ds["name"])}</h1></div></div>', unsafe_allow_html=True)
+    kpi_row([("Observations", fmt(ds["record_count"])),
+             ("Colonnes (numériques)", f"{len(ds['columns'])} ({len(stats['numeric_columns'])})"),
+             ("Modifié le", ds["updated_at"][:10])])
 
     with st.expander("Exporter, renommer ou supprimer ce jeu"):
         st.caption("Exporter")
@@ -1587,9 +1801,7 @@ def page_dataset(user: dict, did: int) -> None:
                 except AppError as e:
                     st.error(str(e))
         st.divider()
-        if not is_admin():
-            st.caption("Supprimer ce jeu : déverrouillez d'abord « Administration » dans le menu de gauche.")
-        else:
+        if True:
             sure = st.checkbox(f"Je confirme la suppression définitive de « {ds['name']} » et de ses "
                                f"{plural(ds['record_count'], 'observation', 'observations')}.")
             if st.button("Supprimer le jeu", disabled=not sure):
@@ -1649,7 +1861,7 @@ def tab_data(user: dict, ds: dict, records: list, stats: dict) -> None:
     frame.index.name = "N°"
     st.dataframe(frame, width="stretch", height=min(420, 38 + 35 * len(frame)))
 
-    st.subheader("Modifier ou supprimer une ligne" if is_admin() else "Modifier une ligne")
+    st.subheader("Modifier ou supprimer une ligne")
     default_row = st.session_state.get("edit_row") or 1
     row_no = st.number_input("N° de ligne", min_value=1, max_value=len(records), value=min(default_row, len(records)), step=1)
     rid, current = records[row_no - 1]
@@ -1658,12 +1870,8 @@ def tab_data(user: dict, ds: dict, records: list, stats: dict) -> None:
         new_values = _record_inputs(ds, stats, current, f"edit_{rid}")
         b1, b2 = st.columns([1, 1])
         save = b1.form_submit_button(f"Enregistrer la ligne n° {row_no}", type="primary")
-        confirm = remove = False
-        if is_admin():
-            confirm = b2.checkbox("Confirmer la suppression")
-            remove = b2.form_submit_button(f"Supprimer la ligne n° {row_no}")
-        else:
-            b2.caption("Supprimer : code administrateur requis (menu de gauche).")
+        confirm = b2.checkbox("Confirmer la suppression")
+        remove = b2.form_submit_button(f"Supprimer la ligne n° {row_no}")
         if save:
             try:
                 update_record(did, user["id"], rid, new_values)
@@ -1898,15 +2106,24 @@ def tab_proba(ds: dict, stats: dict) -> None:
 # ------------------------------------------------------------ programme
 
 def main() -> None:
-    st.set_page_config(page_title="calculBA — génie civil", page_icon="🏗️", layout="wide")
+    st.set_page_config(page_title="calculBA — génie civil", page_icon="🏗️", layout="wide",
+                       initial_sidebar_state="auto")
+    inject_css()
     apply_pending()
     show_flash()
-    user = shared_space()  # plus de connexion : tout le monde travaille dans l'espace commun
-    datasets = list_datasets()
+    token = current_token()
+    user = {"id": find_space(token), "token": token}  # espace privé de ce visiteur
+    try:
+        purge_idle_spaces()
+    except Exception:
+        pass  # le ménage ne doit jamais empêcher l'application de s'ouvrir
+    datasets = list_datasets(user["id"])
     sidebar(user, datasets)
     view = st.session_state.get("view", "home")
     if view == "guide":
         page_guide(user)
+    elif view == "examples":
+        page_examples(user)
     elif view == "new":
         page_new(user)
     elif view == "dataset" and st.session_state.get("ds_id"):
