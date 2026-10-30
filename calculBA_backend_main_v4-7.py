@@ -1004,7 +1004,7 @@ def new_space() -> None:
     token = secrets.token_urlsafe(18)
     st.session_state["_space_token"] = token
     st.query_params[SPACE_PARAM] = token
-    flash("Nouvel espace vide créé. Gardez son lien (menu « Mon espace »).", "✨")
+    flash("Nouvel espace vide créé. Gardez son lien : il est dans « Mon espace ».")
     go("home", ds_id=None)
 
 
@@ -1244,7 +1244,7 @@ def plural(n: int, one: str, many: str) -> str:
     return f"{fmt(n)} {one if n <= 1 else many}"
 
 
-def flash(message: str, icon: str = "✅") -> None:
+def flash(message: str, icon: str | None = None) -> None:
     st.session_state.setdefault("flash", []).append((message, icon))
 
 
@@ -1272,96 +1272,104 @@ def apply_pending() -> None:
 
 
 # ------------------------------------------------------------ apparence
+#
+# Style « carnet d'ingénieur » : papier clair, encre noire, une seule couleur
+# d'accent (vert), titres à empattements, chiffres en police technique.
 
-DOMAIN_STYLE = {
-    "Béton": ("🏗️", "#2563EB"), "Sols et géotechnique": ("⛰️", "#A16207"), "Topographie": ("🗺️", "#15803D"),
-    "Matériaux": ("🪨", "#D97706"), "Structures": ("🏛️", "#7C3AED"), "Routes": ("🛣️", "#475569"),
-    "Hydraulique": ("💧", "#0891B2"), "Autre": ("📁", "#64748B"),
+DOMAIN_COLOR = {
+    "Béton": "#3B5B7A", "Sols et géotechnique": "#8A5A2B", "Topographie": "#3F6B3A", "Matériaux": "#9A6B1F",
+    "Structures": "#5B4A7A", "Routes": "#4A4A46", "Hydraulique": "#2D6B78", "Autre": "#6E685D",
 }
 
 
-def domain_icon(domain: str) -> str:
-    return DOMAIN_STYLE.get(domain, DOMAIN_STYLE["Autre"])[0]
+def domain_color(domain: str) -> str:
+    return DOMAIN_COLOR.get(domain, DOMAIN_COLOR["Autre"])
 
 
 def inject_css() -> None:
     st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
-.stApp, .stApp p, .stApp li, .stApp label, .stApp input, .stApp textarea, .stApp button, .stApp h1, .stApp h2,
-.stApp h3, .stApp td, .stApp th, .stApp span:not([data-testid="stIconMaterial"]) { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; }
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@500;600&family=IBM+Plex+Mono:wght@500&display=swap');
+:root { --paper:#F6F4EF; --side:#EEEAE1; --ink:#1B1A17; --muted:#6E685D; --rule:#D9D3C7; --card:#FFFFFF; --accent:#1F5C4A; }
+.stApp, .stApp p, .stApp li, .stApp label, .stApp input, .stApp textarea, .stApp button, .stApp td, .stApp th,
+.stApp span:not([data-testid="stIconMaterial"]) { font-family: 'IBM Plex Sans', system-ui, sans-serif; }
 [data-testid="stIconMaterial"] { font-family: 'Material Symbols Rounded' !important; }
-.stApp { background: #F4F6FA; }
+.stApp { background: var(--paper); color: var(--ink); }
+.stApp h1, .stApp h2, .stApp h3 { font-family: 'IBM Plex Serif', Georgia, serif !important; font-weight: 600; color: var(--ink); letter-spacing: -.01em; }
 header[data-testid="stHeader"] { background: transparent; }
-.block-container { padding-top: 2rem; max-width: 1200px; }
-.stApp h1 { letter-spacing: -.02em; font-weight: 800; color: #10233F; }
-.stApp h2, .stApp h3 { letter-spacing: -.01em; color: #10233F; }
-[data-testid="stSidebar"] { background: #FFFFFF; border-right: 1px solid #E3E8EF; }
-[data-testid="stSidebar"] .stButton > button { justify-content: flex-start; border-radius: 10px; font-weight: 600; }
-[data-testid="stSidebar"] .stButton > button[kind="tertiary"] { color: #475569; padding-left: 12px; }
-[data-testid="stSidebar"] .stButton > button[kind="tertiary"]:hover { background: #F1F5F9; color: #1D4E89; }
-.stApp .stButton > button, .stApp .stDownloadButton > button, .stApp .stFormSubmitButton > button { border-radius: 10px; font-weight: 600; }
-.stApp .stButton > button[kind="primary"], .stApp .stFormSubmitButton > button[kind="primaryFormSubmit"] {
-  background: linear-gradient(135deg, #1D4E89, #2F6FB8); border: none; box-shadow: 0 6px 16px rgba(29,78,137,.25); }
-.stApp [data-testid="stExpander"] details { background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 14px; }
-.stApp [data-testid="stForm"] { background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; box-shadow: 0 1px 2px rgba(16,35,63,.05), 0 8px 24px rgba(16,35,63,.05); }
-.stApp [data-testid="stMetric"] { background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 14px; padding: 12px 16px; box-shadow: 0 1px 2px rgba(16,35,63,.05); }
-.stApp [data-testid="stDataFrame"] { border-radius: 12px; overflow: hidden; }
-.cb-brand { display:flex; gap:11px; align-items:center; margin: 2px 0 6px; }
-.cb-logo { width:40px; height:40px; border-radius:12px; display:grid; place-items:center; font-size:21px;
-  background: linear-gradient(135deg,#1D4E89,#F59E0B); box-shadow: 0 6px 16px rgba(29,78,137,.25); }
-.cb-brand b { font-size:1.25rem; color:#10233F; letter-spacing:-.02em; }
-.cb-brand small { display:block; color:#64748B; font-size:.78rem; }
-.cb-hero { border-radius:22px; padding:28px 30px; color:#fff; margin-bottom:16px;
-  background: radial-gradient(circle at 88% 15%, rgba(255,255,255,.16), transparent 42%), linear-gradient(135deg,#0F3460,#1D6FB8);
-  box-shadow: 0 10px 30px rgba(15,52,96,.25); }
-.cb-hero h1 { color:#fff !important; font-size:1.9rem; margin:6px 0 8px; line-height:1.2; padding:0 !important; }
-.cb-hero p { color: rgba(255,255,255,.9) !important; max-width: 760px; margin:0; font-size:1.02rem; }
-.cb-pill { display:inline-block; padding:4px 11px; border-radius:999px; font-size:.76rem; font-weight:700;
-  background: rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.28); color:#fff; }
-.cb-kpis { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:12px; margin:4px 0 14px; }
-.cb-kpi { background:#fff; border:1px solid #E3E8EF; border-radius:16px; padding:14px 18px; box-shadow: 0 1px 2px rgba(16,35,63,.05); }
-.cb-kpi .l { color:#64748B; font-size:.75rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }
-.cb-kpi .v { color:#10233F; font-size:1.7rem; font-weight:800; letter-spacing:-.02em; }
-.cb-card-head { display:flex; gap:12px; align-items:center; }
-.cb-ico { width:42px; height:42px; border-radius:12px; display:grid; place-items:center; font-size:21px; flex:none; }
-.cb-card-head b { color:#10233F; font-size:1rem; display:block; line-height:1.25; }
-.cb-card-head small { color:#64748B; font-size:.82rem; }
-.cb-desc { color:#475569; font-size:.88rem; margin:10px 0 4px; min-height: 2.6em; }
-.cb-section { font-weight:800; color:#10233F; font-size:1.15rem; margin:22px 0 4px; letter-spacing:-.01em; }
-.cb-sub { color:#64748B; margin:0 0 12px; }
-.cb-dshead { display:flex; gap:14px; align-items:center; margin: 0 0 12px; }
-.cb-dshead h1 { margin:0 !important; padding:0 !important; font-size:1.9rem; }
-.cb-dshead small { font-weight:700; font-size:.8rem; text-transform:uppercase; letter-spacing:.06em; }
-.cb-ico.big { width:52px; height:52px; font-size:26px; border-radius:14px; }
-[class*="st-key-cbcard"] { background:#FFFFFF; border-color:#E3E8EF !important; border-radius:16px !important;
-  box-shadow: 0 1px 2px rgba(16,35,63,.05), 0 8px 24px rgba(16,35,63,.05); transition: box-shadow .15s, transform .15s; }
-[class*="st-key-cbcard"]:hover { box-shadow: 0 2px 4px rgba(16,35,63,.06), 0 14px 30px rgba(16,35,63,.09); transform: translateY(-1px); }
+.block-container { padding-top: 2.4rem; max-width: 1160px; }
+
+[data-testid="stSidebar"] { background: var(--side); border-right: 1px solid var(--rule); }
+[data-testid="stSidebar"] .stButton button { border-radius: 0; justify-content: flex-start; box-shadow: none;
+  border: none; border-left: 3px solid transparent; background: transparent; color: var(--ink); padding: 6px 12px; min-height: 0; }
 [data-testid="stSidebar"] .stButton button > div { justify-content: flex-start; width: 100%; }
-[data-testid="stSidebar"] .stButton button p { text-align: left; }
-.cb-space { background:#fff; border:1px solid #E3E8EF; border-left:4px solid #F59E0B; border-radius:14px; padding:14px 18px; margin: 4px 0 6px; }
-.cb-space b { color:#10233F; }
-.cb-space span { color:#475569; font-size:.9rem; }
+[data-testid="stSidebar"] .stButton button p { text-align: left; font-size: .95rem; }
+[data-testid="stSidebar"] .stButton button:hover { background: rgba(27,26,23,.05); color: var(--ink); }
+.stApp [data-testid="stSidebar"] .stButton > button[kind="primary"] { border: none; border-left: 3px solid var(--accent);
+  background: rgba(31,92,74,.09); box-shadow: none; }
+.stApp [data-testid="stSidebar"] .stButton > button[kind="primary"]:hover { background: rgba(31,92,74,.14); }
+.stApp [data-testid="stSidebar"] .stButton > button[kind="primary"] p { color: var(--accent) !important; font-weight: 600; }
+
+.stApp .stButton > button, .stApp .stDownloadButton > button, .stApp .stFormSubmitButton > button {
+  border-radius: 4px; font-weight: 500; box-shadow: none; }
+.stApp .stButton > button[kind="primary"], .stApp .stFormSubmitButton > button[kind="primaryFormSubmit"] {
+  background: var(--accent); border: 1px solid var(--accent); color: #fff; }
+.stApp .stButton > button[kind="primary"]:hover { background: #17473A; border-color: #17473A; }
+.stApp .stButton > button[kind="secondary"], .stApp .stDownloadButton > button {
+  background: var(--card); border: 1px solid var(--rule); color: var(--ink); }
+.stApp .stButton > button[kind="secondary"]:hover, .stApp .stDownloadButton > button:hover { border-color: var(--ink); color: var(--ink); }
+.stApp [data-testid="stExpander"] details { background: var(--card); border: 1px solid var(--rule); border-radius: 6px; }
+.stApp [data-testid="stForm"] { background: var(--card); border: 1px solid var(--rule); border-radius: 6px; }
+.stApp [data-testid="stDataFrame"] { border: 1px solid var(--rule); border-radius: 6px; }
+.stApp [data-testid="stAlertContainer"] { border-radius: 4px; }
+.stApp [data-testid="stCaptionContainer"] { color: var(--muted); }
+
+.cb-brand { padding: 4px 0 14px; border-bottom: 1px solid var(--rule); margin-bottom: 14px; }
+.cb-brand b { font-family: 'IBM Plex Serif', Georgia, serif; font-size: 1.55rem; font-weight: 600; color: var(--ink); letter-spacing: -.02em; }
+.cb-brand b span { color: var(--accent); }
+.cb-brand small { display: block; font-family: 'IBM Plex Mono', monospace; font-size: .68rem; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--muted); margin-top: 2px; }
+.cb-label { font-family: 'IBM Plex Mono', monospace; font-size: .7rem; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.cb-mast { border-bottom: 1px solid var(--ink); padding-bottom: 16px; margin-bottom: 20px; }
+.cb-mast h1 { font-size: 2.3rem; line-height: 1.15; margin: 6px 0 8px !important; padding: 0 !important; max-width: 24ch; }
+.cb-mast p { color: var(--muted); max-width: 68ch; margin: 0; font-size: 1.02rem; }
+.cb-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule); margin: 0 0 22px; }
+.cb-stat { padding: 12px 16px 14px; border-left: 1px solid var(--rule); }
+.cb-stat:first-child { border-left: none; padding-left: 0; }
+.cb-stat .v { font-family: 'IBM Plex Serif', Georgia, serif; font-size: 1.75rem; font-weight: 600; color: var(--ink); margin-top: 2px; }
+.cb-h2 { font-family: 'IBM Plex Serif', Georgia, serif; font-weight: 600; font-size: 1.3rem; color: var(--ink); margin: 26px 0 4px; }
+.cb-sub { color: var(--muted); margin: 0 0 14px; }
+.cb-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0; border-top: 1px solid var(--rule); margin-bottom: 18px; }
+.cb-step { padding: 14px 18px 16px 0; }
+.cb-step + .cb-step { padding-left: 18px; border-left: 1px solid var(--rule); }
+.cb-step .n { font-family: 'IBM Plex Mono', monospace; color: var(--accent); font-size: .8rem; }
+.cb-step b { display: block; font-family: 'IBM Plex Serif', Georgia, serif; font-size: 1.1rem; margin: 4px 0; color: var(--ink); }
+.cb-step span { color: var(--muted); font-size: .92rem; }
+.cb-card-title { font-family: 'IBM Plex Serif', Georgia, serif; font-weight: 600; font-size: 1.12rem; color: var(--ink); margin: 4px 0 6px; line-height: 1.3; }
+.cb-desc { color: var(--muted); font-size: .9rem; margin: 0 0 10px; min-height: 2.7em; }
+[class*="st-key-cbcard"] { background: var(--card); border: 1px solid var(--rule) !important; border-radius: 6px !important; }
+[class*="st-key-cbcard"]:hover { border-color: #B9B1A2 !important; }
 </style>
 """, unsafe_allow_html=True)
 
 
-def hero(title: str, text: str, pill: str = "🏗️ calculBA") -> None:
-    st.markdown(f'<div class="cb-hero"><span class="cb-pill">{html.escape(pill)}</span>'
-                f'<h1>{html.escape(title)}</h1><p>{html.escape(text)}</p></div>', unsafe_allow_html=True)
-
-
-def kpi_row(items: list[tuple[str, str]]) -> None:
-    cards = "".join(f'<div class="cb-kpi"><div class="l">{html.escape(a)}</div><div class="v">{html.escape(b)}</div></div>'
-                    for a, b in items)
-    st.markdown(f'<div class="cb-kpis">{cards}</div>', unsafe_allow_html=True)
-
-
-def card_head(domain: str, title: str, subtitle: str) -> None:
-    icon, color = DOMAIN_STYLE.get(domain, DOMAIN_STYLE["Autre"])
-    st.markdown(f'<div class="cb-card-head"><div class="cb-ico" style="background:{color}1F;color:{color}">{icon}</div>'
-                f'<div><b>{html.escape(title)}</b><small>{html.escape(subtitle)}</small></div></div>',
+def masthead(label: str, title: str, lead: str = "", color: str = "") -> None:
+    style = f' style="color:{color}"' if color else ""
+    st.markdown(f'<div class="cb-mast"><div class="cb-label"{style}>{html.escape(label)}</div>'
+                f'<h1>{html.escape(title)}</h1>{f"<p>{html.escape(lead)}</p>" if lead else ""}</div>',
                 unsafe_allow_html=True)
+
+
+def stat_strip(items: list[tuple[str, str]]) -> None:
+    cells = "".join(f'<div class="cb-stat"><div class="cb-label">{html.escape(a)}</div><div class="v">{html.escape(b)}</div></div>'
+                    for a, b in items)
+    st.markdown(f'<div class="cb-stats">{cells}</div>', unsafe_allow_html=True)
+
+
+def card_title(domain: str, title: str) -> None:
+    st.markdown(f'<div class="cb-label" style="color:{domain_color(domain)}">{html.escape(domain)}</div>'
+                f'<div class="cb-card-title">{html.escape(title)}</div>', unsafe_allow_html=True)
 
 
 # ------------------------------------------------------------ exemples par domaine
@@ -1496,14 +1504,14 @@ def examples_gallery(user: dict, key: str) -> None:
         for col, domain in zip(cols, domains[start:start + 3]):
             title, desc, make = EXAMPLE_SETS[domain]
             with col.container(border=True, key=f"cbcard_{key}_{domain.split()[0]}"):
-                card_head(domain, title, domain)
+                card_title(domain, title)
                 st.markdown(f'<div class="cb-desc">{html.escape(desc)}</div>', unsafe_allow_html=True)
                 b1, b2 = st.columns(2)
-                if b1.button("Essayer", key=f"{key}_try_{domain}", type="primary", width="stretch"):
+                if b1.button("Utiliser", key=f"{key}_try_{domain}", type="primary", width="stretch"):
                     create_example(user, domain)
-                b2.download_button("CSV", make().encode("utf-8-sig"), file_name=f"exemple_{domain.split()[0].lower()}.csv",
+                b2.download_button("Fichier CSV", make().encode("utf-8-sig"), file_name=f"exemple_{domain.split()[0].lower()}.csv",
                                    mime="text/csv", key=f"{key}_dl_{domain}", width="stretch")
-    st.caption("Données fictives, réalistes, faites pour apprendre à utiliser calculBA.")
+    st.caption("Données fictives mais réalistes, faites pour apprendre à utiliser calculBA.")
 
 
 # ------------------------------------------------------------ navigation
@@ -1516,19 +1524,18 @@ def nav_button(label: str, view: str, **state) -> None:
 
 def sidebar(user: dict, datasets: list[dict]) -> None:
     with st.sidebar:
-        st.markdown('<div class="cb-brand"><div class="cb-logo">🏗️</div><div><b>calculBA</b>'
-                    '<small>Données de génie civil</small></div></div>', unsafe_allow_html=True)
-        st.write("")
-        nav_button("🏠  Mes jeux de données", "home")
-        nav_button("➕  Nouveau jeu", "new")
-        nav_button("🧪  Exemples par domaine", "examples")
-        nav_button("📖  Mode d'emploi", "guide")
+        st.markdown('<div class="cb-brand"><b>calcul<span>BA</span></b><small>Données de génie civil</small></div>',
+                    unsafe_allow_html=True)
+        nav_button("Mes jeux de données", "home")
+        nav_button("Nouveau jeu", "new")
+        nav_button("Exemples par domaine", "examples")
+        nav_button("Mode d'emploi", "guide")
         if datasets:
-            st.caption("Récents")
+            st.markdown('<div class="cb-label" style="margin:18px 0 4px">Récents</div>', unsafe_allow_html=True)
             for d in datasets[:8]:
                 current = st.session_state.get("view") == "dataset" and st.session_state.get("ds_id") == d["id"]
-                if st.button(f"{domain_icon(d['domain'])}  {d['name']}  ·  {d['record_count']}", key=f"recent_{d['id']}",
-                             width="stretch", type="primary" if current else "tertiary"):
+                if st.button(d["name"], key=f"recent_{d['id']}", width="stretch",
+                             type="primary" if current else "tertiary"):
                     go("dataset", ds_id=d["id"], tab="Données", edit_row=None)
         st.divider()
         my_space_box(user, datasets)
@@ -1538,19 +1545,18 @@ def sidebar(user: dict, datasets: list[dict]) -> None:
 
 
 def my_space_box(user: dict, datasets: list[dict]) -> None:
-    with st.expander("🔒  Mon espace", expanded=False):
-        st.caption("Votre travail est privé : il est lié à votre lien personnel. "
-                   "Gardez ce lien (favori, note) pour le retrouver sur n'importe quel appareil.")
+    with st.expander("Mon espace", expanded=False):
+        st.caption("Votre travail est privé et lié à ce lien personnel. "
+                   "Gardez-le (favori, note) pour le retrouver sur n'importe quel appareil.")
         st.code(space_link(user["token"]), language=None, wrap_lines=True)
-        st.divider()
         if datasets:
             sure = st.checkbox(f"Effacer définitivement mes {plural(len(datasets), 'jeu', 'jeux')}", key="wipe_sure")
-            if st.button("🗑️  Tout effacer", disabled=not sure, width="stretch", key="wipe_btn"):
+            if st.button("Tout effacer", disabled=not sure, width="stretch", key="wipe_btn"):
                 n = wipe_space(user["id"])
                 st.session_state.pop("wipe_sure", None)
                 flash(f"Espace vidé : {plural(n, 'jeu supprimé', 'jeux supprimés')}.")
                 go("home", ds_id=None)
-        if st.button("✨  Commencer un nouvel espace vide", width="stretch", key="new_space_btn",
+        if st.button("Nouvel espace vide", width="stretch", key="new_space_btn",
                      help="Ouvre un espace neuf. L'ancien reste accessible avec son lien."):
             new_space()
 
@@ -1559,34 +1565,32 @@ def my_space_box(user: dict, datasets: list[dict]) -> None:
 
 def page_home(datasets: list[dict], user: dict) -> None:
     if not datasets:
-        hero("Vos mesures de chantier et de laboratoire, analysées en quelques clics",
-             "Saisissez ou importez vos mesures (béton, sols, topographie, routes, hydraulique…) : calculBA calcule "
-             "pour vous statistiques, graphiques et lois de probabilité. Pas de compte : votre espace est privé.")
-        st.markdown('<div class="cb-section">Pour commencer</div>', unsafe_allow_html=True)
-        c1, c2, c3 = st.columns(3)
-        for col, (icon, title, text_) in zip((c1, c2, c3), (
-                ("➕", "Créez un jeu", "Définissez vos colonnes, ou importez votre fichier Excel ou CSV."),
-                ("📊", "Analysez", "Statistiques, graphiques et lois de probabilité se calculent tout seuls."),
-                ("⬇️", "Exportez", "Récupérez vos données en Excel ou en CSV à tout moment."))):
-            with col.container(border=True, key=f"cbcard_start_{icon}"):
-                st.markdown(f"**{icon}  {title}**")
-                st.caption(text_)
-        b1, _ = st.columns([1, 3])
-        if b1.button("➕  Nouveau jeu de données", type="primary", width="stretch", key="home_new"):
+        masthead("calculBA — espace personnel", "Vos mesures de chantier et de laboratoire, analysées sans tableur.",
+                 "Saisissez ou importez les résultats de vos essais : béton, sols, topographie, matériaux, structures, "
+                 "routes ou hydraulique. calculBA calcule les statistiques, trace les graphiques et ajuste les lois de "
+                 "probabilité. Aucun compte n'est nécessaire et votre espace reste privé.")
+        steps = (("01", "Créer un jeu", "Définissez vos colonnes, ou importez un fichier Excel ou CSV."),
+                 ("02", "Analyser", "Statistiques, graphiques et lois de probabilité sont calculés automatiquement."),
+                 ("03", "Exporter", "Récupérez vos données en Excel ou en CSV, à tout moment."))
+        st.markdown('<div class="cb-steps">' + "".join(
+            f'<div class="cb-step"><div class="n">{n}</div><b>{t}</b><span>{d}</span></div>' for n, t, d in steps)
+            + '</div>', unsafe_allow_html=True)
+        b1, b2, _ = st.columns([1.2, 1.2, 2.6])
+        if b1.button("Créer un jeu de données", type="primary", width="stretch", key="home_new"):
             go("new")
-        st.markdown('<div class="cb-section">Ou essayez un exemple, dans votre domaine</div>'
-                    '<p class="cb-sub">Un clic crée une copie dans votre espace : vous pouvez la modifier et la supprimer.</p>',
+        if b2.button("Parcourir les exemples", width="stretch", key="home_examples"):
+            go("examples")
+        st.markdown('<div class="cb-h2">Commencer à partir d\'un exemple</div>'
+                    '<p class="cb-sub">Une copie est créée dans votre espace : vous pouvez la modifier ou la supprimer.</p>',
                     unsafe_allow_html=True)
         examples_gallery(user, "home")
         return
 
-    st.markdown('<div class="cb-dshead"><div class="cb-ico big" style="background:#1D4E891F">🏠</div>'
-                '<div><small style="color:#1D4E89">Mon espace privé</small><h1>Mes jeux de données</h1></div></div>',
-                unsafe_allow_html=True)
+    masthead("Espace personnel", "Mes jeux de données")
     total = sum(d["record_count"] for d in datasets)
-    kpi_row([("Jeux de données", str(len(datasets))), ("Observations", fmt(total)),
-             ("Domaines", str(len({d["domain"] for d in datasets}))),
-             ("Dernière modification", datasets[0]["updated_at"][:10])])
+    stat_strip([("Jeux de données", str(len(datasets))), ("Observations", fmt(total)),
+                ("Domaines", str(len({d["domain"] for d in datasets}))),
+                ("Dernière modification", datasets[0]["updated_at"][:10])])
     domains = ["Tous"] + sorted({d["domain"] for d in datasets})
     chosen = st.segmented_control("Domaine", domains, default="Tous", key="home_domain", label_visibility="collapsed") or "Tous"
     shown = [d for d in datasets if chosen == "Tous" or d["domain"] == chosen]
@@ -1594,27 +1598,27 @@ def page_home(datasets: list[dict], user: dict) -> None:
         cols = st.columns(3)
         for col, d in zip(cols, shown[start:start + 3]):
             with col.container(border=True, key=f"cbcard_ds_{d['id']}"):
-                card_head(d["domain"], d["name"], d["domain"])
-                st.markdown(f'<div class="cb-desc">{plural(d["record_count"], "observation", "observations")} · '
-                            f'{len(d["columns"])} colonnes · modifié le {d["updated_at"][:10]}</div>', unsafe_allow_html=True)
+                card_title(d["domain"], d["name"])
+                st.markdown(f'<div class="cb-desc">{plural(d["record_count"], "observation", "observations")}, '
+                            f'{len(d["columns"])} colonnes. Modifié le {d["updated_at"][:10]}.</div>', unsafe_allow_html=True)
                 if st.button("Ouvrir", key=f"open_{d['id']}", width="stretch"):
                     go("dataset", ds_id=d["id"], tab="Données", edit_row=None)
-    st.warning("Avant toute interprétation, vérifiez les unités de chaque colonne, la qualité des mesures "
-               "et les normes d'essai applicables.", icon="⚠️")
+    st.caption("Avant toute interprétation, vérifiez les unités de chaque colonne, la qualité des mesures "
+               "et les normes d'essai applicables.")
 
 
 def page_examples(user: dict) -> None:
-    hero("Exemples par domaine", "Sept jeux de données réalistes pour découvrir calculBA dans votre spécialité. "
-         "« Essayer » crée une copie dans votre espace ; « CSV » télécharge le fichier pour voir le bon format d'import.",
-         "🧪 Exemples")
+    masthead("Exemples", "Un jeu de données par domaine",
+             "Sept jeux réalistes pour découvrir calculBA dans votre spécialité. « Utiliser » crée une copie dans "
+             "votre espace ; « Fichier CSV » montre le format attendu pour importer vos propres mesures.")
     examples_gallery(user, "ex")
 
 
 # ------------------------------------------------------------ mode d'emploi
 
 def page_guide(user: dict) -> None:
-    hero("Mode d'emploi", "calculBA range et analyse vos mesures de génie civil (essais de béton, sols, topographie, "
-         "routes, hydraulique…) sans faire les calculs à la main dans un cahier ou un tableur.", "📖 Guide")
+    masthead("Guide", "Mode d'emploi", "calculBA range et analyse vos mesures de génie civil (essais de béton, sols, "
+             "topographie, routes, hydraulique…) sans faire les calculs à la main dans un cahier ou un tableur.")
     t1, t2, t3, t4, t5 = st.tabs(["1. Les bases", "2. Mettre des mesures", "3. Lire les résultats",
                                   "4. Mon espace et l'export", "Questions fréquentes"])
     with t1:
@@ -1674,13 +1678,13 @@ def page_guide(user: dict) -> None:
             "calculBA cherche la **loi de probabilité** qui décrit le mieux vos mesures (Normale, Lognormale, Weibull, "
             "Gumbel…). **La plus petite AIC est la meilleure.** Le **fractile 5 %** est la valeur sous laquelle tombent "
             "5 % des mesures selon la loi. Comptez une trentaine de valeurs pour un résultat fiable.")
-        st.warning("Ces calculs aident à interpréter les mesures ; ils ne remplacent pas la vérification "
-                   "prévue par les normes (EN 206, Eurocodes…).", icon="⚠️")
+        st.caption("Ces calculs aident à interpréter les mesures ; ils ne remplacent pas la vérification "
+                   "prévue par les normes (EN 206, Eurocodes…).")
     with t4:
         st.subheader("Un espace privé, sans compte")
         st.markdown(
             "Chaque personne qui ouvre calculBA reçoit **son propre espace vide** : elle ne voit que son travail. "
-            "L'espace est lié à **votre lien personnel** (menu « Mon espace ») : gardez-le en favori pour retrouver "
+            "L'espace est lié à **votre lien personnel** (« Mon espace », dans le menu) : gardez-le en favori pour retrouver "
             "vos jeux, sur votre téléphone comme sur votre ordinateur. Ne le partagez qu'avec les personnes qui doivent "
             "voir vos données.")
         st.markdown(
@@ -1770,11 +1774,8 @@ def page_dataset(user: dict, did: int) -> None:
     rows = [v for _, v in records]
     stats = describe(ds["columns"], rows)
 
-    icon, color = DOMAIN_STYLE.get(ds["domain"], DOMAIN_STYLE["Autre"])
-    st.markdown(f'<div class="cb-dshead"><div class="cb-ico big" style="background:{color}1F;color:{color}">{icon}</div>'
-                f'<div><small style="color:{color}">{html.escape(ds["domain"])}</small>'
-                f'<h1>{html.escape(ds["name"])}</h1></div></div>', unsafe_allow_html=True)
-    kpi_row([("Observations", fmt(ds["record_count"])),
+    masthead(ds["domain"], ds["name"], color=domain_color(ds["domain"]))
+    stat_strip([("Observations", fmt(ds["record_count"])),
              ("Colonnes (numériques)", f"{len(ds['columns'])} ({len(stats['numeric_columns'])})"),
              ("Modifié le", ds["updated_at"][:10])])
 
@@ -1894,7 +1895,7 @@ def tab_data(user: dict, ds: dict, records: list, stats: dict) -> None:
 
 
 def tab_stats(ds: dict, stats: dict) -> None:
-    with st.expander("Comment lire ce tableau ?", icon="❔"):
+    with st.expander("Comment lire ce tableau"):
         st.markdown("**Moyenne** : valeur typique. **Écart-type** : dispersion autour de la moyenne. "
                     "**CV** : écart-type ÷ moyenne, en % (petit = mesures régulières). "
                     "**Min / Max** : vérifiez qu'aucune valeur n'est aberrante. "
@@ -1944,7 +1945,7 @@ def tab_charts(ds: dict, rows: list[dict], stats: dict) -> None:
     if not stats["total_rows"] or not nums:
         st.info("Rien à tracer pour l'instant : il faut des observations et au moins une colonne numérique.")
         return
-    with st.expander("Comment lire ces graphiques ?", icon="❔"):
+    with st.expander("Comment lire ces graphiques"):
         st.markdown("**Répartition** : combien de mesures dans chaque intervalle. "
                     "**Moyenne par groupe** : compare des lots, des âges, des couches. "
                     "**Relation** : chaque point est une observation ; R² proche de 1 = les deux grandeurs évoluent ensemble. "
@@ -2036,7 +2037,7 @@ def tab_proba(ds: dict, stats: dict) -> None:
         st.info("Il faut une colonne numérique avec au moins 5 valeurs différentes pour ajuster une loi de probabilité.")
         return
     usable.sort(key=lambda c: -C[c]["distinct"])
-    with st.expander("À quoi sert cet onglet ?", icon="❔"):
+    with st.expander("À quoi sert cet onglet"):
         st.markdown("On cherche la **loi de probabilité** qui décrit le mieux les mesures d'une colonne. "
                     "Barres = vos mesures ; courbe = la loi. Le **fractile 5 %** est la valeur sous laquelle tombent "
                     "5 % des mesures selon cette loi. Dans le tableau du bas, **la plus petite AIC** désigne la loi la plus adaptée. "
@@ -2092,7 +2093,7 @@ def tab_proba(ds: dict, stats: dict) -> None:
 
     st.subheader("Quelle loi décrit le mieux ces mesures ?")
     st.dataframe(pd.DataFrame([{
-        "Rang": c.get("rank", "—"), "Loi": c["label"] + ("  ◀ affichée" if c["key"] == sel["key"] else ""),
+        "Rang": c.get("rank", "—"), "Loi": c["label"] + (" (affichée)" if c["key"] == sel["key"] else ""),
         "AIC": fmt(c["aic"], 2) if c["available"] else "—",
         "Écart": ("meilleure" if c.get("delta_aic") == 0 else "+" + fmt(c["delta_aic"], 2)) if c["available"] else "—",
         "KS : D": fmt(c["ks_d"]) if c["available"] else "—",
@@ -2106,7 +2107,7 @@ def tab_proba(ds: dict, stats: dict) -> None:
 # ------------------------------------------------------------ programme
 
 def main() -> None:
-    st.set_page_config(page_title="calculBA — génie civil", page_icon="🏗️", layout="wide",
+    st.set_page_config(page_title="calculBA — génie civil", layout="wide",
                        initial_sidebar_state="auto")
     inject_css()
     apply_pending()
