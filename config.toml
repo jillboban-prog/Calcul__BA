@@ -1,0 +1,13 @@
+# Thème de calculBA
+[theme]
+base = "light"
+primaryColor = "#1D4E89"
+backgroundColor = "#F4F6FA"
+secondaryBackgroundColor = "#EEF2F7"
+textColor = "#10233F"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
