@@ -1,8 +1,13 @@
 """calculBA — version Streamlit (un seul fichier).
 
-Application de collecte et d'analyse de données de génie civil : comptes,
-jeux de données, saisie et import CSV/Excel, statistiques, graphiques,
-lois de probabilité, exports.
+Application de collecte et d'analyse de données de génie civil : jeux de
+données, saisie et import CSV/Excel, statistiques, graphiques, lois de
+probabilité, exports.
+
+ACCÈS : sans connexion. Le lien ouvre directement l'application, et tous
+les visiteurs partagent le même espace (les mêmes jeux de données).
+Les suppressions (d'un jeu ou d'une ligne) demandent le code administrateur
+CALCULBA_ADMIN_CODE, à définir dans les Secrets.
 
 SUR VOTRE PC
     pip install -r requirements.txt
@@ -14,7 +19,7 @@ SUR STREAMLIT COMMUNITY CLOUD (lien public gratuit)
     2. share.streamlit.io : Main file path = streamlit_app.py
     3. Paramètres de l'application, « Secrets » : collez
            DATABASE_URL = "postgresql://...neon.tech/neondb?sslmode=require"
-           CALCULBA_INVITE_CODE = "votre-code"        (facultatif)
+           CALCULBA_ADMIN_CODE = "un-code-secret"     (active les suppressions)
        Sans DATABASE_URL, les données sont EFFACÉES à chaque redémarrage de
        l'application : la base Neon (gratuite) les conserve.
 
@@ -22,21 +27,19 @@ Sommaire (cherchez « SECTION » avec Ctrl + F) :
     1. RÉGLAGES
     2. CALCULS (lecture des fichiers, statistiques, graphiques, lois, exports)
     3. BASE DE DONNÉES (SQLite sur PC, PostgreSQL en ligne)
-    4. COMPTES ET SÉCURITÉ
+    4. ESPACE COMMUN ET CODE ADMINISTRATEUR
     5. OPÉRATIONS SUR LES DONNÉES
     6. INTERFACE STREAMLIT
 """
 from __future__ import annotations
 
 import csv
-import hashlib
 import hmac
 import io
 import json
 import math
 import os
 import re
-import secrets
 import sqlite3
 import threading
 import time
@@ -75,16 +78,14 @@ DB_PATH = Path(_setting("CALCULBA_DB", str(ROOT / "calculba.db")))
 DATABASE_URL = _setting("DATABASE_URL")
 USE_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
 
-INVITE_CODE = _setting("CALCULBA_INVITE_CODE")
-REGISTER_MAX_PER_IP = int(_setting("CALCULBA_REGISTER_MAX_PER_IP", "5"))   # par heure
-REGISTER_WINDOW_SECONDS = 3600
-LOGIN_MAX_FAILURES = 8
-LOGIN_WINDOW_SECONDS = 15 * 60
-
-PASSWORD_MIN = 10
-PASSWORD_MAX = 256
-PBKDF2_ITERATIONS = 600_000
-LEGACY_PBKDF2_ITERATIONS = 310_000
+# Code qui autorise les suppressions (vide = suppressions désactivées).
+ADMIN_CODE = _setting("CALCULBA_ADMIN_CODE")
+ADMIN_MAX_FAILURES = 8
+ADMIN_WINDOW_SECONDS = 15 * 60
+# Propriétaire technique des jeux créés sans connexion (la table « datasets »
+# exige un utilisateur). Ce compte n'a pas de mot de passe utilisable.
+SHARED_EMAIL = "espace-commun@calculba.local"
+SHARED_NAME = "Espace commun"
 
 MAX_COLUMNS = 60
 MAX_ROWS = 50_000
@@ -92,8 +93,9 @@ MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_NAME_LENGTH = 120
 MAX_COLUMN_NAME_LENGTH = 80
 MAX_VALUE_LENGTH = 500
-MAX_DATASETS_PER_USER = int(_setting("CALCULBA_MAX_DATASETS", "100"))
-MAX_RECORDS_PER_USER = int(_setting("CALCULBA_MAX_RECORDS", "200000"))
+# Limites pour tout l'espace commun (protègent la base gratuite Neon de 0,5 Go).
+MAX_DATASETS = int(_setting("CALCULBA_MAX_DATASETS", "300"))
+MAX_RECORDS = int(_setting("CALCULBA_MAX_RECORDS", "500000"))
 NUMERIC_THRESHOLD = 0.8
 
 DOMAINS = ["Béton", "Sols et géotechnique", "Topographie", "Matériaux", "Structures", "Routes", "Hydraulique", "Autre"]
@@ -946,38 +948,8 @@ def _integrity_errors() -> tuple[type[BaseException], ...]:
 IntegrityError = _integrity_errors()
 
 # ============================================================================
-# SECTION 4 — COMPTES ET SÉCURITÉ
+# SECTION 4 — ESPACE COMMUN ET CODE ADMINISTRATEUR
 # ============================================================================
-
-def hash_password(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
-    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt.hex()}${digest.hex()}"
-
-
-def verify_password(password: str, stored: str) -> bool:
-    """Accepte le nouveau format et l'ancien « sel:empreinte » de la version 3."""
-    try:
-        if stored.startswith("pbkdf2_sha256$"):
-            _, iterations, salt_hex, digest_hex = stored.split("$", 3)
-            n = int(iterations)
-        else:
-            salt_hex, digest_hex = stored.split(":", 1)
-            n = LEGACY_PBKDF2_ITERATIONS
-        candidate = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), n)
-        return hmac.compare_digest(candidate.hex(), digest_hex)
-    except (ValueError, TypeError):
-        return False
-
-
-def needs_rehash(stored: str) -> bool:
-    return not stored.startswith(f"pbkdf2_sha256${PBKDF2_ITERATIONS}$")
-
-
-# Empreinte factice : vérifier un compte inexistant prend le même temps
-# qu'un compte réel, ce qui empêche de deviner les adresses inscrites.
-DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
-
 
 class TooManyAttempts(Exception):
     pass
@@ -1011,9 +983,8 @@ class Throttle:
 
 
 @st.cache_resource
-def throttles() -> dict[str, Throttle]:
-    return {"login": Throttle(LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS),
-            "register": Throttle(REGISTER_MAX_PER_IP, REGISTER_WINDOW_SECONDS)}
+def admin_throttle() -> Throttle:
+    return Throttle(ADMIN_MAX_FAILURES, ADMIN_WINDOW_SECONDS)
 
 
 def client_ip() -> str | None:
@@ -1027,6 +998,35 @@ def client_ip() -> str | None:
         return None
 
 
+def check_admin_code(code: str) -> bool:
+    """Vrai si le code administrateur est bon ; limite les essais (8 par 15 min)."""
+    if not ADMIN_CODE:
+        return False
+    key = client_ip() or "?"
+    admin_throttle().check(key, "codes incorrects")
+    if hmac.compare_digest(code.strip().encode("utf-8"), ADMIN_CODE.encode("utf-8")):
+        admin_throttle().reset(key)
+        return True
+    admin_throttle().add(key)
+    return False
+
+
+@st.cache_resource(show_spinner=False)
+def shared_space() -> dict:
+    """Identifiant de l'espace commun (créé au premier lancement)."""
+    with database() as db:
+        row = db.execute("SELECT id FROM users WHERE email = ?", (SHARED_EMAIL,)).fetchone()
+        if row is None:
+            try:
+                # « ! » n'est l'empreinte d'aucun mot de passe : personne ne peut s'y connecter.
+                db.insert("INSERT INTO users (full_name, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
+                          (SHARED_NAME, SHARED_EMAIL, "!", ts()))
+                db.commit()
+            except IntegrityError:  # créé au même instant par une autre session
+                db.rollback()
+            row = db.execute("SELECT id FROM users WHERE email = ?", (SHARED_EMAIL,)).fetchone()
+    return {"id": row["id"], "full_name": SHARED_NAME}
+
 
 # ============================================================================
 # SECTION 5 — OPÉRATIONS SUR LES DONNÉES
@@ -1039,64 +1039,6 @@ class AppError(Exception):
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]{2,}$")
 
 
-def register_user(full_name: str, email: str, password: str, password2: str, invite: str) -> dict:
-    full_name = " ".join(full_name.split())
-    email = email.strip().lower()
-    if INVITE_CODE and not hmac.compare_digest(invite.strip(), INVITE_CODE):
-        raise AppError("Code d'invitation incorrect. Demandez-le à la personne qui vous a envoyé le lien.")
-    if len(full_name) < 2 or len(full_name) > 120:
-        raise AppError("Saisissez votre nom complet (2 à 120 caractères).")
-    if not EMAIL_RE.match(email) or len(email) > 254:
-        raise AppError("Adresse e-mail invalide.")
-    if not PASSWORD_MIN <= len(password) <= PASSWORD_MAX:
-        raise AppError(f"Le mot de passe doit contenir au moins {PASSWORD_MIN} caractères.")
-    if password != password2:
-        raise AppError("Les deux mots de passe ne correspondent pas.")
-    ip = client_ip()
-    if ip:
-        throttles()["register"].check(ip, "créations de compte depuis cette connexion")
-    with database() as db:
-        try:
-            uid = db.insert("INSERT INTO users (full_name, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
-                            (full_name, email, hash_password(password), ts()))
-            db.commit()
-        except IntegrityError:
-            raise AppError("Un compte existe déjà avec cette adresse e-mail. Connectez-vous.")
-    if ip:
-        throttles()["register"].add(ip)
-    return {"id": uid, "full_name": full_name, "email": email}
-
-
-def login_user(email: str, password: str) -> dict:
-    email = email.strip().lower()
-    key = f"{client_ip() or '?'}|{email}"
-    throttles()["login"].check(key, "tentatives de connexion")
-    with database() as db:
-        row = db.execute("SELECT id, full_name, email, password_hash FROM users WHERE email = ?", (email,)).fetchone()
-        ok = verify_password(password, row["password_hash"] if row else DUMMY_HASH)
-        if not row or not ok:
-            throttles()["login"].add(key)
-            raise AppError("Adresse e-mail ou mot de passe incorrect.")
-        throttles()["login"].reset(key)
-        if needs_rehash(row["password_hash"]):
-            db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(password), row["id"]))
-            db.commit()
-        return {"id": row["id"], "full_name": row["full_name"], "email": row["email"]}
-
-
-def delete_account(user_id: int, password: str) -> None:
-    with database() as db:
-        row = db.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not row or not verify_password(password, row["password_hash"]):
-            raise AppError("Mot de passe incorrect.")
-        ids = [r[0] for r in db.execute("SELECT id FROM datasets WHERE user_id = ?", (user_id,))]
-        db.executemany("DELETE FROM records WHERE dataset_id = ?", [(i,) for i in ids])
-        db.execute("DELETE FROM datasets WHERE user_id = ?", (user_id,))
-        db.execute("DELETE FROM user_sessions WHERE user_id = ?", (user_id,))
-        db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        db.commit()
-
-
 def _dataset_out(row) -> dict:
     return {"id": row["id"], "name": row["name"], "domain": row["domain"],
             "columns": json.loads(row["columns_json"]), "record_count": row["record_count"],
@@ -1107,30 +1049,30 @@ _DS_SELECT = """SELECT d.*, (SELECT COUNT(*) FROM records r WHERE r.dataset_id =
                 FROM datasets d"""
 
 
-def list_datasets(user_id: int) -> list[dict]:
+def list_datasets(user_id: int | None = None) -> list[dict]:
+    """Tous les jeux de l'espace commun, y compris ceux créés avec les anciens comptes."""
     with database() as db:
-        rows = db.execute(_DS_SELECT + " WHERE d.user_id = ? ORDER BY COALESCE(d.updated_at, d.created_at) DESC, d.id DESC",
-                          (user_id,)).fetchall()
+        rows = db.execute(_DS_SELECT + " ORDER BY COALESCE(d.updated_at, d.created_at) DESC, d.id DESC").fetchall()
     return [_dataset_out(r) for r in rows]
 
 
 def get_dataset(db: Database, did: int, user_id: int) -> dict:
-    row = db.execute(_DS_SELECT + " WHERE d.id = ? AND d.user_id = ?", (did, user_id)).fetchone()
+    row = db.execute(_DS_SELECT + " WHERE d.id = ?", (did,)).fetchone()
     if not row:
-        raise AppError("Ce jeu de données n'existe pas ou appartient à un autre compte.")
+        raise AppError("Ce jeu de données n'existe pas (il a peut-être été supprimé).")
     return _dataset_out(row)
 
 
 def check_quota(db: Database, user_id: int, new_datasets: int = 0, new_records: int = 0) -> None:
     row = db.execute(
-        """SELECT (SELECT COUNT(*) FROM datasets WHERE user_id = ?) AS n_ds,
-                  (SELECT COUNT(*) FROM records r JOIN datasets d ON d.id = r.dataset_id WHERE d.user_id = ?) AS n_rec""",
-        (user_id, user_id)).fetchone()
-    if new_datasets and row["n_ds"] + new_datasets > MAX_DATASETS_PER_USER:
-        raise AppError(f"Limite de {MAX_DATASETS_PER_USER} jeux par compte atteinte. Supprimez des jeux inutiles.")
-    if new_records and row["n_rec"] + new_records > MAX_RECORDS_PER_USER:
-        left = max(0, MAX_RECORDS_PER_USER - row["n_rec"])
-        raise AppError(f"Limite de {MAX_RECORDS_PER_USER:,} observations par compte : il reste de la place pour "
+        """SELECT (SELECT COUNT(*) FROM datasets) AS n_ds,
+                  (SELECT COUNT(*) FROM records) AS n_rec""").fetchone()
+    if new_datasets and row["n_ds"] + new_datasets > MAX_DATASETS:
+        raise AppError(f"Limite de {MAX_DATASETS} jeux atteinte pour l'espace commun. "
+                       "Demandez à l'administrateur de supprimer des jeux inutiles.")
+    if new_records and row["n_rec"] + new_records > MAX_RECORDS:
+        left = max(0, MAX_RECORDS - row["n_rec"])
+        raise AppError(f"Limite de {MAX_RECORDS:,} observations pour l'espace commun : il reste de la place pour "
                        f"{left:,}.".replace(",", " "))
 
 
@@ -1192,7 +1134,7 @@ def delete_dataset(did: int, user_id: int) -> None:
     with database() as db:
         get_dataset(db, did, user_id)
         db.execute("DELETE FROM records WHERE dataset_id = ?", (did,))
-        db.execute("DELETE FROM datasets WHERE id = ? AND user_id = ?", (did, user_id))
+        db.execute("DELETE FROM datasets WHERE id = ?", (did,))
         db.commit()
 
 
@@ -1311,48 +1253,43 @@ def apply_pending() -> None:
             st.session_state[key] = value
 
 
-# ------------------------------------------------------------- connexion
-
-def page_auth() -> None:
-    st.title("calculBA")
-    st.write("Saisissez vos mesures de laboratoire et de chantier, importez vos tableurs "
-             "et obtenez des statistiques fiables sur vos essais.")
-    login_tab, register_tab = st.tabs(["Se connecter", "Créer un compte"])
-    with login_tab:
-        with st.form("login"):
-            email = st.text_input("Adresse e-mail", key="login_email")
-            password = st.text_input("Mot de passe", type="password", key="login_password")
-            if st.form_submit_button("Se connecter", type="primary", width="stretch"):
-                try:
-                    st.session_state["user"] = login_user(email, password)
-                    go("home")
-                except (AppError, TooManyAttempts) as e:
-                    st.error(str(e))
-    with register_tab:
-        with st.form("register"):
-            name = st.text_input("Nom complet", max_chars=120)
-            email = st.text_input("Adresse e-mail ")
-            password = st.text_input("Mot de passe", type="password", max_chars=PASSWORD_MAX,
-                                     help=f"{PASSWORD_MIN} caractères minimum. Utilisez un mot de passe que vous n'employez nulle part ailleurs.")
-            password2 = st.text_input("Confirmez le mot de passe", type="password", max_chars=PASSWORD_MAX)
-            invite = st.text_input("Code d'invitation", help="Donné par la personne qui vous a envoyé le lien.") if INVITE_CODE else ""
-            if st.form_submit_button("Créer mon compte", type="primary", width="stretch"):
-                try:
-                    st.session_state["user"] = register_user(name, email, password, password2, invite)
-                    flash("Compte créé. Bienvenue !")
-                    go("home")
-                except (AppError, TooManyAttempts) as e:
-                    st.error(str(e))
-    st.caption("Chaque compte ne voit que ses propres jeux de données. Sur un ordinateur partagé, "
-               "déconnectez-vous après utilisation.")
-
-
 # ------------------------------------------------------------ navigation
+
+def is_admin() -> bool:
+    return bool(st.session_state.get("admin"))
+
+
+def admin_box() -> None:
+    """Déverrouille les suppressions pour cette session avec le code administrateur."""
+    with st.expander("Administration", expanded=False):
+        if not ADMIN_CODE:
+            st.caption("Suppressions désactivées : ajoutez CALCULBA_ADMIN_CODE dans les Secrets "
+                       "pour pouvoir supprimer des jeux ou des lignes.")
+            return
+        if is_admin():
+            st.caption("Suppressions autorisées pendant cette visite.")
+            if st.button("Verrouiller", width="stretch", key="admin_lock"):
+                st.session_state.pop("admin", None)
+                st.rerun()
+            return
+        with st.form("admin_form", clear_on_submit=True):
+            code = st.text_input("Code administrateur", type="password", key="admin_code")
+            if st.form_submit_button("Déverrouiller", width="stretch"):
+                try:
+                    if check_admin_code(code):
+                        st.session_state["admin"] = True
+                        flash("Suppressions déverrouillées.", "🔓")
+                        st.rerun()
+                    else:
+                        st.error("Code incorrect.")
+                except TooManyAttempts as e:
+                    st.error(str(e))
+
 
 def sidebar(user: dict, datasets: list[dict]) -> None:
     with st.sidebar:
         st.markdown("## calculBA")
-        if st.button("Mes jeux de données", width="stretch",
+        if st.button("Jeux de données", width="stretch",
                      type="primary" if st.session_state.get("view") == "home" else "secondary"):
             go("home")
         if st.button("Nouveau jeu", width="stretch",
@@ -1366,23 +1303,7 @@ def sidebar(user: dict, datasets: list[dict]) -> None:
                              width="stretch", type="primary" if current else "tertiary"):
                     go("dataset", ds_id=d["id"], tab="Données", edit_row=None)
         st.divider()
-        st.markdown(f"**{user['full_name']}**  \n{user['email']}")
-        if st.button("Se déconnecter", width="stretch"):
-            for k in list(st.session_state.keys()):
-                del st.session_state[k]
-            st.rerun()
-        with st.expander("Mon compte"):
-            st.caption("Supprimer définitivement le compte et tous ses jeux de données. Exportez d'abord ce que vous voulez garder.")
-            pw = st.text_input("Mot de passe actuel", type="password", key="del_pw")
-            if st.button("Supprimer mon compte", type="secondary"):
-                try:
-                    delete_account(user["id"], pw)
-                    for k in list(st.session_state.keys()):
-                        del st.session_state[k]
-                    flash("Compte et données supprimés.")
-                    st.rerun()
-                except AppError as e:
-                    st.error(str(e))
+        admin_box()
         if not USE_POSTGRES and str(ROOT).startswith("/mount/src"):  # Streamlit Community Cloud sans base Neon
             st.warning("Base temporaire : sur Streamlit Cloud, les données sont effacées au redémarrage. "
                        "Ajoutez DATABASE_URL (base Neon) dans les Secrets.")
@@ -1391,7 +1312,8 @@ def sidebar(user: dict, datasets: list[dict]) -> None:
 # --------------------------------------------------------------- accueil
 
 def page_home(datasets: list[dict]) -> None:
-    st.title("Mes jeux de données")
+    st.title("Jeux de données")
+    st.caption("Espace commun : toutes les personnes qui ouvrent le lien voient et complètent ces jeux.")
     if not datasets:
         st.info("Un jeu de données regroupe les mesures d'une campagne d'essais ou d'un chantier. "
                 "Créez votre premier jeu : définissez vos colonnes, ou importez un fichier CSV ou Excel.")
@@ -1469,7 +1391,7 @@ def page_dataset(user: dict, did: int) -> None:
             ds = get_dataset(db, did, user["id"])
         except AppError as e:
             st.error(str(e))
-            if st.button("Revenir à mes jeux"):
+            if st.button("Revenir aux jeux de données"):
                 go("home")
             return
         records = load_records(db, did)
@@ -1506,12 +1428,18 @@ def page_dataset(user: dict, did: int) -> None:
                 except AppError as e:
                     st.error(str(e))
         st.divider()
-        sure = st.checkbox(f"Je confirme la suppression définitive de « {ds['name']} » et de ses "
-                           f"{plural(ds['record_count'], 'observation', 'observations')}.")
-        if st.button("Supprimer le jeu", disabled=not sure):
-            delete_dataset(did, user["id"])
-            flash(f"Jeu « {ds['name']} » supprimé.")
-            go("home")
+        if not is_admin():
+            st.caption("Supprimer ce jeu : déverrouillez d'abord « Administration » dans le menu de gauche.")
+        else:
+            sure = st.checkbox(f"Je confirme la suppression définitive de « {ds['name']} » et de ses "
+                               f"{plural(ds['record_count'], 'observation', 'observations')}.")
+            if st.button("Supprimer le jeu", disabled=not sure):
+                try:
+                    delete_dataset(did, user["id"])
+                    flash(f"Jeu « {ds['name']} » supprimé.")
+                    go("home")
+                except AppError as e:
+                    st.error(str(e))
 
     tab = st.segmented_control("Section", TABS, key="tab", label_visibility="collapsed") or "Données"
     if tab == "Données":
@@ -1560,7 +1488,7 @@ def tab_data(user: dict, ds: dict, records: list, stats: dict) -> None:
     frame.index.name = "N°"
     st.dataframe(frame, width="stretch", height=min(420, 38 + 35 * len(frame)))
 
-    st.subheader("Modifier ou supprimer une ligne")
+    st.subheader("Modifier ou supprimer une ligne" if is_admin() else "Modifier une ligne")
     default_row = st.session_state.get("edit_row") or 1
     row_no = st.number_input("N° de ligne", min_value=1, max_value=len(records), value=min(default_row, len(records)), step=1)
     rid, current = records[row_no - 1]
@@ -1569,8 +1497,12 @@ def tab_data(user: dict, ds: dict, records: list, stats: dict) -> None:
         new_values = _record_inputs(ds, stats, current, f"edit_{rid}")
         b1, b2 = st.columns([1, 1])
         save = b1.form_submit_button(f"Enregistrer la ligne n° {row_no}", type="primary")
-        confirm = b2.checkbox("Confirmer la suppression")
-        remove = b2.form_submit_button(f"Supprimer la ligne n° {row_no}")
+        confirm = remove = False
+        if is_admin():
+            confirm = b2.checkbox("Confirmer la suppression")
+            remove = b2.form_submit_button(f"Supprimer la ligne n° {row_no}")
+        else:
+            b2.caption("Supprimer : code administrateur requis (menu de gauche).")
         if save:
             try:
                 update_record(did, user["id"], rid, new_values)
@@ -1583,10 +1515,13 @@ def tab_data(user: dict, ds: dict, records: list, stats: dict) -> None:
             if not confirm:
                 st.error("Cochez « Confirmer la suppression » pour supprimer cette ligne.")
             else:
-                delete_record(did, user["id"], rid)
-                flash(f"Ligne n° {row_no} supprimée.")
-                st.session_state["edit_row"] = max(1, row_no - 1)
-                st.rerun()
+                try:
+                    delete_record(did, user["id"], rid)
+                    flash(f"Ligne n° {row_no} supprimée.")
+                    st.session_state["edit_row"] = max(1, row_no - 1)
+                    st.rerun()
+                except AppError as e:
+                    st.error(str(e))
 
 
 def tab_stats(ds: dict, stats: dict) -> None:
@@ -1788,11 +1723,8 @@ def main() -> None:
     st.set_page_config(page_title="calculBA — génie civil", page_icon="🏗️", layout="wide")
     apply_pending()
     show_flash()
-    user = st.session_state.get("user")
-    if not user:
-        page_auth()
-        return
-    datasets = list_datasets(user["id"])
+    user = shared_space()  # plus de connexion : tout le monde travaille dans l'espace commun
+    datasets = list_datasets()
     sidebar(user, datasets)
     view = st.session_state.get("view", "home")
     if view == "new":
