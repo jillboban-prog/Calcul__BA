@@ -1,0 +1,19 @@
+# Thème de calculBA : papier clair, menu vert foncé
+[theme]
+base = "light"
+primaryColor = "#13704F"
+backgroundColor = "#F3F0E8"
+secondaryBackgroundColor = "#EAE5D8"
+textColor = "#16150F"
+
+[theme.sidebar]
+backgroundColor = "#143A2F"
+secondaryBackgroundColor = "#1D4B3D"
+textColor = "#EEF2EC"
+primaryColor = "#8FD6B0"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
