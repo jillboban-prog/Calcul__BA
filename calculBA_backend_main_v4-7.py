@@ -1295,6 +1295,9 @@ def sidebar(user: dict, datasets: list[dict]) -> None:
         if st.button("Nouveau jeu", width="stretch",
                      type="primary" if st.session_state.get("view") == "new" else "secondary"):
             go("new")
+        if st.button("📖 Mode d'emploi", width="stretch",
+                     type="primary" if st.session_state.get("view") == "guide" else "secondary"):
+            go("guide")
         if datasets:
             st.caption("Récents")
             for d in datasets[:8]:
@@ -1311,9 +1314,13 @@ def sidebar(user: dict, datasets: list[dict]) -> None:
 
 # --------------------------------------------------------------- accueil
 
-def page_home(datasets: list[dict]) -> None:
+def page_home(datasets: list[dict], user: dict | None = None) -> None:
     st.title("Jeux de données")
-    st.caption("Espace commun : toutes les personnes qui ouvrent le lien voient et complètent ces jeux.")
+    st.caption("calculBA range vos mesures de laboratoire et de chantier et calcule pour vous statistiques, "
+               "graphiques et lois de probabilité. Espace commun : toutes les personnes qui ouvrent le lien "
+               "voient et complètent ces jeux.")
+    if user is not None:
+        quick_start(user, expanded=not datasets)
     if not datasets:
         st.info("Un jeu de données regroupe les mesures d'une campagne d'essais ou d'un chantier. "
                 "Créez votre premier jeu : définissez vos colonnes, ou importez un fichier CSV ou Excel.")
@@ -1334,10 +1341,162 @@ def page_home(datasets: list[dict]) -> None:
                "et les normes d'essai applicables.", icon="⚠️")
 
 
+
+# ------------------------------------------------------------ mode d'emploi
+
+EXAMPLE_NAME = "Exemple — essais de béton"
+
+
+def create_example(user: dict) -> None:
+    """Crée le jeu d'exemple (54 essais de béton) et l'ouvre sur les statistiques."""
+    try:
+        did, n = import_dataset(user["id"], "essais_beton.csv", EXAMPLE_CSV.encode("utf-8-sig"), EXAMPLE_NAME, "Béton")
+        flash(f"Jeu d'exemple créé : {plural(n, 'essai', 'essais')}.")
+        go("dataset", ds_id=did, tab="Statistiques", edit_row=None)
+    except AppError as e:
+        st.error(str(e))
+
+
+def quick_start(user: dict, expanded: bool) -> None:
+    """Résumé en 4 étapes affiché sur l'accueil."""
+    with st.expander("Comment ça marche ? (4 étapes)", expanded=expanded, icon="💡"):
+        st.markdown(
+            "1. **Créez un jeu de données** avec « Nouveau jeu » : une campagne d'essais, un chantier, un lot.\n"
+            "2. **Mettez vos mesures** : saisissez-les ligne par ligne, ou importez votre fichier Excel ou CSV.\n"
+            "3. **Lisez les résultats** dans les onglets *Statistiques*, *Graphiques* et *Probabilités* : "
+            "tout est calculé automatiquement.\n"
+            "4. **Exportez** vos données en Excel ou en CSV quand vous voulez.")
+        c1, c2 = st.columns(2)
+        if c1.button("Essayer avec un exemple", type="primary", width="stretch", key="qs_example",
+                     help="Crée un jeu de 54 essais de béton pour découvrir l'application sans rien saisir."):
+            create_example(user)
+        if c2.button("Lire le mode d'emploi complet", width="stretch", key="qs_guide"):
+            go("guide")
+
+
+def page_guide(user: dict) -> None:
+    st.title("Mode d'emploi")
+    st.write("calculBA sert à **ranger et analyser des mesures de génie civil** (essais de béton, de sols, "
+             "relevés topographiques, chantiers…) sans faire les calculs à la main dans un cahier ou un tableur. "
+             "Vous entrez les mesures, l'application calcule moyennes, dispersion, graphiques et lois de probabilité.")
+    if st.button("Essayer tout de suite avec un exemple (54 essais de béton)", type="primary", key="g_example"):
+        create_example(user)
+
+    t1, t2, t3, t4, t5 = st.tabs(["1. Les bases", "2. Mettre des mesures", "3. Lire les résultats",
+                                  "4. Exporter et partager", "Questions fréquentes"])
+    with t1:
+        st.subheader("Trois mots à connaître")
+        st.markdown(
+            "- **Jeu de données** : un ensemble de mesures qui vont ensemble, par exemple « Essais de compression — lot 3 ». "
+            "C'est comme une feuille de tableur.\n"
+            "- **Colonne** : ce que l'on mesure (Echantillon, Age_jours, Resistance_MPa…).\n"
+            "- **Observation** : une ligne, c'est-à-dire une éprouvette, un point ou un sondage, avec toutes ses mesures.")
+        st.subheader("Le menu de gauche")
+        st.markdown(
+            "- **Jeux de données** : la liste de tous les jeux ; choisissez-en un et cliquez sur « Ouvrir ».\n"
+            "- **Nouveau jeu** : créer un jeu vide ou importer un fichier.\n"
+            "- **Mode d'emploi** : cette page.\n"
+            "- **Récents** : les derniers jeux utilisés, en un clic.\n"
+            "- **Administration** : réservé à la personne qui gère l'application (suppressions).")
+        st.subheader("Un espace commun")
+        st.info("Il n'y a pas de compte à créer : tous ceux qui ouvrent le lien voient et complètent les mêmes jeux. "
+                "N'y mettez rien de confidentiel. Pour éviter les accidents, seule la personne qui a le code "
+                "administrateur peut supprimer un jeu ou une ligne.")
+
+    with t2:
+        st.subheader("Méthode A : créer un jeu et saisir les mesures")
+        st.markdown(
+            "1. Cliquez sur **Nouveau jeu**, puis « Définir les colonnes ».\n"
+            "2. Choisissez un **modèle** (Béton, Sols, Topographie…) ou écrivez vos colonnes, **une par ligne**.\n"
+            "3. Donnez un nom au jeu, choisissez le domaine, puis **Créer le jeu**.\n"
+            "4. Dans l'onglet **Données**, remplissez « Ajouter une observation » et validez. Recommencez pour chaque ligne.")
+        st.subheader("Méthode B : importer un fichier Excel ou CSV")
+        st.markdown(
+            "1. Cliquez sur **Nouveau jeu**, puis « Importer un fichier ».\n"
+            "2. Votre fichier doit avoir **les noms de colonnes sur la première ligne**, puis une observation par ligne.\n"
+            "3. Choisissez le fichier (.xlsx ou .csv), puis **Importer le fichier**.\n"
+            "4. Pour voir le bon format, téléchargez le **fichier d'exemple** proposé sur cette page.")
+        st.subheader("Corriger une erreur")
+        st.markdown("Dans l'onglet **Données**, partie « Modifier une ligne » : choisissez le **numéro de la ligne** "
+                    "(colonne N° du tableau), corrigez la valeur, puis « Enregistrer la ligne ».")
+        st.subheader("Les bonnes habitudes")
+        st.markdown(
+            "- **Mettez l'unité dans le nom de la colonne** : `Resistance_MPa`, `Profondeur_m`. Sinon, plus personne ne sait "
+            "si 25 veut dire 25 MPa ou 25 kN.\n"
+            "- **Virgule ou point** pour les décimales : 30,5 et 30.5 sont acceptés.\n"
+            "- **Une mesure inconnue = case vide**, jamais 0 : un 0 ferait baisser la moyenne.\n"
+            "- **Une ligne = une éprouvette** (ou un point, un sondage) ; ne mélangez pas deux essais sur une ligne.\n"
+            "- Une colonne de **texte** (Lot, Couche, Sondage) sert à **regrouper** les résultats dans les graphiques.")
+
+    with t3:
+        st.subheader("Onglet Statistiques")
+        st.markdown(
+            "| Indicateur | Ce que ça veut dire |\n|---|---|\n"
+            "| **n** | nombre de valeurs utilisables dans la colonne |\n"
+            "| **Manquantes** | cases vides |\n"
+            "| **Moyenne** | la valeur « typique » : somme des valeurs divisée par n |\n"
+            "| **Écart-type** | la dispersion : de combien les mesures s'écartent en moyenne de la moyenne |\n"
+            "| **CV** | écart-type ÷ moyenne, en % : plus il est petit, plus les mesures sont régulières |\n"
+            "| **Min, Max** | plus petite et plus grande valeur : vérifiez qu'il n'y a pas d'erreur de saisie |\n"
+            "| **Q1, Médiane, Q3** | 25 %, 50 % et 75 % des valeurs sont en dessous |")
+        st.caption("Exemple : moyenne 31 MPa, écart-type 2 MPa, CV 6 % : des résistances proches les unes des autres. "
+                   "Un message signale aussi les valeurs non numériques (une lettre dans une colonne de nombres) "
+                   "avec un bouton pour aller les corriger.")
+        st.subheader("Onglet Graphiques")
+        st.markdown(
+            "- **Répartition** (histogramme) : combien de mesures tombent dans chaque intervalle.\n"
+            "- **Moyenne par groupe** : compare des lots, des âges ou des couches.\n"
+            "- **Relation entre deux variables** : chaque point est une observation ; la droite et le **R²** "
+            "disent si les deux grandeurs évoluent ensemble (R² proche de 1 : relation forte).\n"
+            "- **Valeurs dans l'ordre de saisie** : repère une dérive ou une valeur anormale.\n\n"
+            "Passez la souris (ou le doigt) sur un graphique pour lire les valeurs.")
+        st.subheader("Onglet Probabilités")
+        st.markdown(
+            "L'application cherche la **loi de probabilité** qui décrit le mieux vos mesures "
+            "(Normale, Lognormale, Weibull, Gumbel…) :\n"
+            "- la **courbe noire** est la loi ajustée, les **barres** sont vos mesures ;\n"
+            "- le **fractile 5 %** est la valeur sous laquelle tombent 5 % des mesures selon la loi ;\n"
+            "- le tableau « Quelle loi décrit le mieux… » classe les lois : **la plus petite AIC est la meilleure**.\n\n"
+            "Il faut au moins 5 valeurs, et une trentaine pour un résultat fiable.")
+        st.warning("Ces calculs aident à interpréter les mesures ; ils ne remplacent pas la vérification "
+                   "de conformité prévue par les normes (EN 206, Eurocodes…).", icon="⚠️")
+
+    with t4:
+        st.subheader("Exporter")
+        st.markdown(
+            "Ouvrez le jeu, puis « Exporter, renommer ou supprimer ce jeu » :\n"
+            "- **Excel (.xlsx)** : à ouvrir directement dans Excel ;\n"
+            "- **CSV Excel FR/DE** : séparateur point-virgule et virgule décimale (Excel en français) ;\n"
+            "- **CSV standard** : pour d'autres logiciels (Python, R…).")
+        st.subheader("Partager")
+        st.markdown("Envoyez simplement le lien de l'application : la personne arrive directement sur les jeux de données, "
+                    "sans inscription.")
+
+    with t5:
+        st.markdown(
+            "**L'application affiche « This app has gone to sleep » ?**  \n"
+            "Elle s'est endormie faute de visites. Cliquez sur « Yes, get this app back up! » et patientez environ une minute : "
+            "les données ne sont pas perdues.\n\n"
+            "**Mes données sont-elles conservées ?**  \n"
+            "Oui : elles sont enregistrées dans une base de données en ligne, même quand l'application dort.\n\n"
+            "**Je ne trouve pas le bouton « Supprimer ».**  \n"
+            "La suppression demande le code administrateur (menu de gauche, « Administration »). "
+            "Demandez-le à la personne qui gère l'application.\n\n"
+            "**« Valeur non numérique » quand j'ajoute une ligne ?**  \n"
+            "Une lettre ou un symbole a été tapé dans une colonne de nombres (ex. « 30 MPa » au lieu de « 30,5 »). "
+            "Écrivez seulement le nombre ; l'unité est dans le nom de la colonne.\n\n"
+            "**Mon fichier ne s'importe pas.**  \n"
+            "Vérifiez que la première ligne contient les noms de colonnes, qu'il n'y a pas de lignes de titre au-dessus, "
+            "et que le fichier est en .xlsx ou .csv.")
+
+
 # ----------------------------------------------------------- nouveau jeu
 
 def page_new(user: dict) -> None:
     st.title("Nouveau jeu de données")
+    st.caption("Deux façons de commencer : **définir les colonnes** puis saisir les mesures une par une, "
+               "ou **importer un fichier** Excel ou CSV qui contient déjà vos mesures. "
+               "Un doute ? Ouvrez le « Mode d'emploi » dans le menu de gauche.")
     mode = st.segmented_control("Méthode", ["Définir les colonnes", "Importer un fichier"],
                                 default="Définir les colonnes", key="new_mode")
     if mode == "Importer un fichier":
@@ -1466,6 +1625,8 @@ def _record_inputs(ds: dict, stats: dict, values: dict, prefix: str) -> dict:
 
 def tab_data(user: dict, ds: dict, records: list, stats: dict) -> None:
     did = ds["id"]
+    st.caption("Une ligne = une observation (une éprouvette, un point, un sondage). Laissez vide une mesure inconnue ; "
+               "virgule ou point pour les décimales. Les onglets Statistiques, Graphiques et Probabilités se mettent à jour seuls.")
     with st.expander("Ajouter une observation", expanded=not records):
         with st.form("add", clear_on_submit=True):
             values = _record_inputs(ds, stats, {}, "add")
@@ -1525,6 +1686,12 @@ def tab_data(user: dict, ds: dict, records: list, stats: dict) -> None:
 
 
 def tab_stats(ds: dict, stats: dict) -> None:
+    with st.expander("Comment lire ce tableau ?", icon="❔"):
+        st.markdown("**Moyenne** : valeur typique. **Écart-type** : dispersion autour de la moyenne. "
+                    "**CV** : écart-type ÷ moyenne, en % (petit = mesures régulières). "
+                    "**Min / Max** : vérifiez qu'aucune valeur n'est aberrante. "
+                    "**Q1, Médiane, Q3** : 25 %, 50 % et 75 % des valeurs sont en dessous. "
+                    "**n** : valeurs utilisées ; **Manquantes** : cases vides (elles ne comptent pas dans les calculs).")
     if not stats["total_rows"]:
         st.info("Ajoutez des observations pour obtenir moyennes, dispersion et répartition.")
         return
@@ -1569,6 +1736,12 @@ def tab_charts(ds: dict, rows: list[dict], stats: dict) -> None:
     if not stats["total_rows"] or not nums:
         st.info("Rien à tracer pour l'instant : il faut des observations et au moins une colonne numérique.")
         return
+    with st.expander("Comment lire ces graphiques ?", icon="❔"):
+        st.markdown("**Répartition** : combien de mesures dans chaque intervalle. "
+                    "**Moyenne par groupe** : compare des lots, des âges, des couches. "
+                    "**Relation** : chaque point est une observation ; R² proche de 1 = les deux grandeurs évoluent ensemble. "
+                    "**Ordre de saisie** : repère une dérive ou une valeur anormale. "
+                    "Survolez un graphique pour lire les valeurs.")
     C = stats["columns"]
     by_distinct = sorted(nums, key=lambda c: -C[c]["distinct"])
     y0, x0 = by_distinct[0], by_distinct[-1]
@@ -1655,6 +1828,11 @@ def tab_proba(ds: dict, stats: dict) -> None:
         st.info("Il faut une colonne numérique avec au moins 5 valeurs différentes pour ajuster une loi de probabilité.")
         return
     usable.sort(key=lambda c: -C[c]["distinct"])
+    with st.expander("À quoi sert cet onglet ?", icon="❔"):
+        st.markdown("On cherche la **loi de probabilité** qui décrit le mieux les mesures d'une colonne. "
+                    "Barres = vos mesures ; courbe = la loi. Le **fractile 5 %** est la valeur sous laquelle tombent "
+                    "5 % des mesures selon cette loi. Dans le tableau du bas, **la plus petite AIC** désigne la loi la plus adaptée. "
+                    "Comptez une trentaine de valeurs pour un résultat fiable.")
     st.subheader("Ajuster une loi de probabilité")
     st.caption("Ajustement par maximum de vraisemblance sur toutes les valeurs de la colonne.")
     p1, p2 = st.columns(2)
@@ -1727,12 +1905,14 @@ def main() -> None:
     datasets = list_datasets()
     sidebar(user, datasets)
     view = st.session_state.get("view", "home")
-    if view == "new":
+    if view == "guide":
+        page_guide(user)
+    elif view == "new":
         page_new(user)
     elif view == "dataset" and st.session_state.get("ds_id"):
         page_dataset(user, st.session_state["ds_id"])
     else:
-        page_home(datasets)
+        page_home(datasets, user)
 
 
 EXAMPLE_CSV = r'''Echantillon;Lot;Age_jours;Resistance_MPa;Affaissement_mm
